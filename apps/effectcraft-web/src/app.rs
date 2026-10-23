@@ -188,6 +188,9 @@ pub async fn start(canvas_id: String) -> Result<(), JsValue> {
     let canvas: web_sys::HtmlCanvasElement = doc.get_element_by_id(&canvas_id).ok_or("no canvas")?.dyn_into()?;
     let empty = query_flag("empty");
     let home = query_flag("home");
+    // `?fossa=<room origin>`: running inside a local Fossa Direct room.
+    let fossa = query_value("fossa").is_some_and(|o| o.starts_with("http://127.0.0.1:") || o.starts_with("http://localhost:"));
+    effectcraft_ui_egui::FOSSA_HOSTED.store(fossa, std::sync::atomic::Ordering::Relaxed);
     // Browser storage: settings, recent projects, imported media, saved projects, auto-saves and
     // the last session come back.
     let t0 = js_sys::Date::now();

@@ -270,7 +270,10 @@ fn rail_ui(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: &egui::Painter, rail:
         }
         y += 38.0;
     }
-    // Community links at the foot (below the pages when the window is short).
+    // Community links at the foot (below the pages when the window is short); none in Fossa Direct.
+    if crate::fossa_hosted() {
+        return;
+    }
     let links = [
         (Icon::Chat, "Join the ArtCraft Discord", "help.discord"),
         (Icon::Globe, "getartcraft.com", "help.website"),

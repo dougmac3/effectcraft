@@ -23,16 +23,19 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let cy = rect.center().y;
     let mut x = rect.min.x + if app.integrated_titlebar && !app.ui.show_menu_bar { 80.0 } else { 10.0 };
 
-    // Brand mark.
-    let brand = Rect::from_min_size(pos2(x, cy - 12.0), vec2(24.0, 24.0));
-    paint_logo(&p, brand);
-    let bresp = ui.interact(brand, egui::Id::new("brand"), Sense::click());
-    app.auto.add_response("header.about", &bresp, "About EffectCraft");
-    widgets::focus_outline(ui, &bresp, &t);
-    if bresp.on_hover_text(tr("About EffectCraft")).clicked() {
-        app.dialog = Some(Dialog::About);
+    // Brand mark (not inside Fossa Direct).
+    let hosted = crate::fossa_hosted();
+    if !hosted {
+        let brand = Rect::from_min_size(pos2(x, cy - 12.0), vec2(24.0, 24.0));
+        paint_logo(&p, brand);
+        let bresp = ui.interact(brand, egui::Id::new("brand"), Sense::click());
+        app.auto.add_response("header.about", &bresp, "About EffectCraft");
+        widgets::focus_outline(ui, &bresp, &t);
+        if bresp.on_hover_text(tr("About EffectCraft")).clicked() {
+            app.dialog = Some(Dialog::About);
+        }
+        x += 32.0;
     }
-    x += 32.0;
 
     // Home.
     let home = Rect::from_min_size(pos2(x, cy - 13.0), vec2(26.0, 26.0));
@@ -182,7 +185,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let label = p.text(pos2(snap.max.x + 4.0, cy), Align2::LEFT_CENTER, tr("Snapping"), Tokens::ui(12.0), t.text_dim);
     snapping_options(app, ui, Rect::from_min_size(pos2(label.max.x + 2.0, cy - 9.0), vec2(18.0, 18.0)));
 
-    // Right side: community buttons, workspaces.
+    // Right side: community buttons, workspaces (none inside Fossa Direct: its desk is narrow).
+    if hosted {
+        return;
+    }
     let mut rx = rect.max.x - 10.0;
     // The pill fits its label (icon, gap, text) with even padding: it was a fixed 104 px with the
     // text at its left, which left a wide gap on the right (#581).

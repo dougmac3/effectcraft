@@ -33,6 +33,22 @@ pub mod theme;
 pub mod widgets;
 mod workspace_state;
 
+/// Set when the page runs inside a Fossa Direct room: no ArtCraft branding, community links or extra header controls.
+pub static FOSSA_HOSTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn fossa_hosted() -> bool {
+    FOSSA_HOSTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Commands that open ArtCraft, Discord, GitHub or website links (hidden when [`fossa_hosted`]).
+pub(crate) fn fossa_hidden(command: &str) -> bool {
+    fossa_hosted()
+        && matches!(
+            command,
+            "help.docs" | "help.discord" | "help.website" | "help.appPage" | "help.github" | "help.onlineTutorials" | "help.reportIssue" | "help.sibling"
+        )
+}
+
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 

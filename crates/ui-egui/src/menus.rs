@@ -310,6 +310,9 @@ fn only_comp(p: &Value) -> Option<effectcraft_engine::project::ItemId> {
 
 /// Execute a UI or engine command by id.
 pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: Value) -> Result<Value, String> {
+    if crate::fossa_hidden(id) {
+        return Ok(Value::Null);
+    }
     if matches!(id, "effects.copyPresetsFolderPath" | "mediaBrowser.copySourcePath") {
         return frontend(app, ctx, id, params);
     }
@@ -2070,7 +2073,22 @@ fn menu_nodes(
     nav: &mut crate::menu_keys::Nav,
     depth: usize,
 ) {
-    for n in nodes {
+    // Inside Fossa Direct a separator only follows a drawn entry (hidden links leave none twice).
+    let mut after_entry = false;
+    for (i, n) in nodes.iter().enumerate() {
+        if let MenuNode::Item(e) = n
+            && crate::fossa_hidden(&e.command)
+        {
+            continue;
+        }
+        let shown = !matches!(n, MenuNode::Separator);
+        if !shown
+            && crate::fossa_hosted()
+            && (!after_entry || !nodes[i + 1..].iter().any(|n| !matches!(n, MenuNode::Separator) && !matches!(n, MenuNode::Item(e) if crate::fossa_hidden(&e.command))))
+        {
+            continue;
+        }
+        after_entry = shown;
         match n {
             MenuNode::Separator => {
                 ui.separator();
