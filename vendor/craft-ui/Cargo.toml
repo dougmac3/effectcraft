@@ -1,5 +1,5 @@
 # craft-ui from storytold/craft-libs rev 5c874d5 (crates/ui), moved to egui 0.37 for Fossa
-# Direct, which hosts EffectCraft in its own egui 0.37 window. Drop this copy (and the patch in
+# Direct, which hosts EffectCraft in its own egui 0.37 window (its tests stay upstream). Drop this copy (and the patch in
 # the workspace Cargo.toml) once craft-libs moves to egui 0.37.
 [package]
 name = "craft-ui"

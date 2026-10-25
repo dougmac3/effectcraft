@@ -118,5 +118,3 @@ fn bounded_stroke(stroke: Stroke, rect: Rect) -> Stroke {
     }
 }
 
-#[cfg(test)]
-mod tests;

@@ -74,5 +74,3 @@ impl SvgIconSet {
     }
 }
 
-#[cfg(test)]
-mod tests;

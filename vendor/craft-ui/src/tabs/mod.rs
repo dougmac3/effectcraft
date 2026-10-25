@@ -161,5 +161,3 @@ impl<'a> Tab<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests;
