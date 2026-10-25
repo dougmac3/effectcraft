@@ -388,6 +388,7 @@ fn settings_buttons_stay_in_view_at_200_percent() {
             delta: egui::vec2(0.0, -1000.0),
             modifiers: Default::default(),
             phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
         });
         h.run_steps(5);
     };

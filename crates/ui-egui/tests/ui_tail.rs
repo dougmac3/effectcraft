@@ -197,6 +197,7 @@ fn layer_style_controls_stay_reachable_in_a_small_window() {
             delta: vec2(-2000.0, -2000.0),
             modifiers: Default::default(),
             phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
         });
         h.run_steps(5);
         let at = in_view(&h, "dialog.layerStyle.value.dropShadow/noise");

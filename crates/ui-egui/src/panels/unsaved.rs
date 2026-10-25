@@ -54,7 +54,7 @@ pub fn on_close_requested(app: &mut EffectcraftApp, ctx: &egui::Context) {
     // Logged, so a window that closes on its own shows it (#234).
     log::info!("the window was asked to close");
     if ask(app, "app.quit", &json!({})) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        crate::window_cmd(ctx, egui::ViewportCommand::CancelClose);
     }
 }
 
@@ -166,7 +166,7 @@ fn answer_with(app: &mut EffectcraftApp, ctx: &egui::Context, a: Answer) {
     }
     if id == "app.quit" {
         app.dialog_state.unsaved.quitting = true;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        crate::window_cmd(ctx, egui::ViewportCommand::Close);
         return;
     }
     app.dialog_state.unsaved.answered = true;

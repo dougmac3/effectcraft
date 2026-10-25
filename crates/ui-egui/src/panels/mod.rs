@@ -212,7 +212,7 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, p: PanelKind, rect: Rec
 
 /// The ≡ panel menu (opened from a tab).
 pub fn panel_menu_popup(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
-    let id = egui::Id::new("panel-menu");
+    let id = crate::id("panel-menu");
     let Some((panel, pos)) = ui.ctx().data(|d| d.get_temp::<(PanelKind, egui::Pos2)>(id)) else { return };
     // The menu opens in the window that shows the panel (a panel can have its own window).
     if app.panel_viewport(ui.ctx(), panel) != ui.ctx().viewport_id() {
@@ -228,7 +228,7 @@ pub fn panel_menu_popup(app: &mut EffectcraftApp, ui: &mut egui::Ui) {
             }
             let floating = app.ui.floating.iter().any(|f| f.panels.contains(&panel));
             if !floating && ui.button(tr("Undock Panel")).clicked() {
-                let r = crate::dock_ui::default_float_rect(ui.ctx().content_rect());
+                let r = crate::dock_ui::default_float_rect(crate::screen(ui.ctx()));
                 let _ = app.dock_command(ui.ctx(), craft_ui::docking::Action::Float { panel, rect: r });
                 close = true;
             }

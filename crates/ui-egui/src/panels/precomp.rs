@@ -209,7 +209,7 @@ pub fn navigator(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         };
         let g = p.layout_no_wrap(label.clone(), Tokens::ui(11.5), col);
         let r = Rect::from_min_size(pos2(x, rect.min.y + 2.0), vec2(g.size().x + 12.0, rect.height() - 4.0));
-        let resp = ui.interact(r, egui::Id::new(("comp-nav", id.0)), Sense::click());
+        let resp = ui.interact(r, crate::id(("comp-nav", id.0)), Sense::click());
         if active {
             p.rect_filled(r, 3.0, t.row_selected);
         } else if resp.hovered() {
@@ -223,7 +223,7 @@ pub fn navigator(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
         x = r.max.x + 2.0;
     }
     let fr = Rect::from_min_size(pos2(rect.max.x - 26.0, rect.min.y + 2.0), vec2(22.0, rect.height() - 4.0));
-    if crate::widgets::icon_button(ui, fr, crate::icons::Icon::Flowchart, false, &t, egui::Id::new("comp-nav-flow"))
+    if crate::widgets::icon_button(ui, fr, crate::icons::Icon::Flowchart, false, &t, crate::id("comp-nav-flow"))
         .on_hover_text(tr("Composition Mini-Flowchart"))
         .clicked()
     {
@@ -248,7 +248,7 @@ pub fn mini_flowchart(app: &mut EffectcraftApp, ctx: &egui::Context) {
     let downs = downstream(&proj, cid);
     let mut open = None;
     let mut close = false;
-    let area = egui::Area::new(egui::Id::new("mini-flowchart")).order(egui::Order::Foreground).constrain(true).fixed_pos(pos2(at[0], at[1])).show(ctx, |ui| {
+    let area = egui::Area::new(crate::id("mini-flowchart")).order(egui::Order::Foreground).constrain(true).fixed_pos(pos2(at[0], at[1])).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).fill(t.panel_bg).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
             let col_w = 160.0;
             let rows = ups.len().max(downs.len()).max(1) as f32;
@@ -256,7 +256,7 @@ pub fn mini_flowchart(app: &mut EffectcraftApp, ctx: &egui::Context) {
             let (rect, _) = ui.allocate_exact_size(vec2(col_w * 3.0 + 60.0, h), Sense::hover());
             let p = ui.painter().clone();
             let node = |ui: &mut egui::Ui, app: &mut EffectcraftApp, r: Rect, id: ItemId, active: bool| {
-                let resp = ui.interact(r, egui::Id::new(("mfc", id.0)), Sense::click());
+                let resp = ui.interact(r, crate::id(("mfc", id.0)), Sense::click());
                 p.rect_filled(
                     r,
                     4.0,

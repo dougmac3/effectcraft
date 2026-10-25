@@ -21,8 +21,8 @@ struct TabOrder {
 }
 
 fn tab_order_id(ui: &Ui) -> egui::Id {
-    let panel = ui.stack().iter().find(|s| s.tags().contains(PANEL_TAG)).map_or(egui::Id::NULL, |s| s.id);
-    egui::Id::new(("hot-tab-order", panel))
+    let panel = ui.stack().iter().find(|s| s.tags().contains(PANEL_TAG)).map_or(egui::Id::NULL, |s| s.unique_id);
+    crate::id(("hot-tab-order", panel))
 }
 
 /// Puts hot-text field `id` in its panel's Tab order. True when a Tab in the field before it
@@ -326,7 +326,7 @@ fn field(ui: &mut Ui, rect: Rect, text: &mut String, hint: &str, t: &Tokens, sea
             // As tall as the field, so the text and the hint sit on its middle (they sat high, #581).
             .min_size(inner.size())
             .font(Tokens::ui(12.0))
-            .vertical_align(egui::Align::Center),
+            .align(egui::Align2::LEFT_CENTER),
     )
 }
 
@@ -411,7 +411,7 @@ pub fn scroll_bar(ui: &mut Ui, auto: &mut Registry, key: &str, track: Rect, scro
     let thumb_len = (len * len / (len + max.max(0.0)).max(1.0)).max(16.0).min(len).max(0.0);
     let travel = (len - thumb_len).max(1.0);
     let thumb_at = |s: f32| track.min[a] + (len - thumb_len) * if max > 0.0 { (s / max).clamp(0.0, 1.0) } else { 0.0 };
-    let resp = ui.interact(track.expand2(if vertical { vec2(3.0, 0.0) } else { vec2(0.0, 3.0) }), egui::Id::new(key), Sense::drag());
+    let resp = ui.interact(track.expand2(if vertical { vec2(3.0, 0.0) } else { vec2(0.0, 3.0) }), crate::id(key), Sense::drag());
     let pressed = resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.any_pressed());
     let mut s = scroll;
     if let Some(p) = resp.interact_pointer_pos().filter(|p| pressed && !(thumb_at(scroll)..=thumb_at(scroll) + thumb_len).contains(&p[a])) {
@@ -482,8 +482,8 @@ pub fn check_label(on: bool, label: &str) -> String {
     if on { format!("✓ {label}") } else { format!("   {label}") }
 }
 
-fn label_swatch_id() -> egui::Id {
-    egui::Id::new("label-swatch")
+fn label_swatch_id() -> egui::IdSalt {
+    egui::IdSalt::new("label-swatch")
 }
 
 /// The colour swatch of a Label menu row, as an atom for its button: Label menus show each
@@ -494,7 +494,7 @@ pub fn label_swatch() -> egui::Atom<'static> {
 }
 
 /// Paint the [`label_swatch`] of a laid-out button: label `l`'s colour, an empty box for None.
-pub fn paint_label_swatch(ui: &Ui, out: &egui::AtomLayoutResponse, l: effectcraft_engine::color::Label, t: &Tokens) {
+pub fn paint_label_swatch(ui: &Ui, out: &egui::WidgetAtomResponse, l: effectcraft_engine::color::Label, t: &Tokens) {
     let Some(r) = out.rect(label_swatch_id()) else { return };
     let r = Rect::from_center_size(r.center(), vec2(11.0, 11.0));
     if l == effectcraft_engine::color::Label::None {
@@ -564,7 +564,7 @@ pub fn popup_menu(ui: &mut Ui, id: egui::Id, pos: egui::Pos2, options: &[String]
 /// returns a choice, on Escape, or on a press outside it and outside `anchor` (a control that
 /// toggles the list itself). Returns the choice.
 pub fn popup_list<R>(ui: &mut Ui, id: egui::Id, pos: egui::Pos2, anchor: Rect, rows: usize, seps: usize, body: impl FnOnce(&mut Ui) -> Option<R>) -> Option<R> {
-    let screen = ui.ctx().content_rect();
+    let screen = crate::screen(ui.ctx());
     let max_h = (screen.height() - 24.0).max(120.0);
     let sp = ui.spacing();
     let est = (rows as f32 * (sp.interact_size.y + sp.item_spacing.y + 4.0) + seps as f32 * (2.0 * sp.item_spacing.y + 2.0) + 16.0).min(max_h + 12.0);
@@ -592,7 +592,7 @@ pub(crate) fn note_open_popup_list(ctx: &egui::Context) {
 
 /// The pass a [`popup_list`] was last drawn in.
 fn popup_list_pass_id() -> egui::Id {
-    egui::Id::new("popup-list-pass")
+    crate::id("popup-list-pass")
 }
 
 /// Whether a menu, context menu or popup list is open, or the menu bar has the keyboard (as of
@@ -608,7 +608,7 @@ pub fn any_menu_open(ctx: &egui::Context) -> bool {
 /// (Window ▸ Workspace) got stuck at that height with its last entries scrolled out of view
 /// (#191).
 pub fn menu_scroll<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-    let max_h = ui.ctx().content_rect().height() - 40.0;
+    let max_h = crate::screen(ui.ctx()).height() - 40.0;
     egui::ScrollArea::vertical().max_height(max_h).min_scrolled_height(max_h).show(ui, add).inner
 }
 

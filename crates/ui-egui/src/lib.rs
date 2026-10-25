@@ -18,6 +18,8 @@ mod dock_shared;
 pub mod dock_ui;
 mod expression_diagnostics;
 pub mod frames;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod fossa_native;
 pub mod gpu_failure;
 pub mod header;
 pub mod i18n;
@@ -38,6 +40,31 @@ pub static FOSSA_HOSTED: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 
 pub fn fossa_hosted() -> bool {
     FOSSA_HOSTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A root egui id for `source`: inside Fossa Direct salted with "effectcraft", so the desk's
+/// panels, popups and stored state never share an id with the host or another desk.
+pub fn id(source: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
+    if fossa_hosted() { egui::Id::unique(("effectcraft", source)) } else { egui::Id::unique(source) }
+}
+
+/// Where the app draws: the window's content, or inside Fossa Direct the desk's rect (dialogs,
+/// popups and floating panels are placed and kept within it).
+pub(crate) fn screen(ctx: &egui::Context) -> egui::Rect {
+    ctx.data(|d| d.get_temp(fossa_native_bounds())).unwrap_or_else(|| ctx.content_rect())
+}
+
+/// The key of the desk's rect in egui's temporary data (set by `fossa_native::Desk::ui`).
+pub(crate) fn fossa_native_bounds() -> egui::Id {
+    egui::Id::unique("effectcraft-desk-bounds")
+}
+
+/// Send a window command (title, close, size, full screen...), except inside Fossa Direct: the
+/// window is its host's.
+pub(crate) fn window_cmd(ctx: &egui::Context, cmd: egui::ViewportCommand) {
+    if !fossa_hosted() {
+        ctx.send_viewport_cmd(cmd);
+    }
 }
 
 /// Commands that open ArtCraft, Discord, GitHub or website links (hidden when [`fossa_hosted`]).
@@ -300,6 +327,8 @@ pub struct EffectcraftApp {
     queued_screenshots: Vec<(u64, f64, u32)>,
     pending_screenshots: Vec<(u64, Option<String>, Option<[f32; 4]>, Sender<serde_json::Value>, f64)>,
     next_token: u64,
+    /// Screenshots the window took for `pending_screenshots`, by token.
+    screenshots: (Sender<(u64, Arc<egui::ColorImage>)>, Receiver<(u64, Arc<egui::ColorImage>)>),
     pub(crate) last_ui_time: f64,
     /// When the user last did something (input or an edit): Cache Frames When Idle waits for
     /// a second of quiet. (time, project revision then)
@@ -408,6 +437,7 @@ impl EffectcraftApp {
             queued_screenshots: vec![],
             pending_screenshots: vec![],
             next_token: 1,
+            screenshots: std::sync::mpsc::channel(),
             last_ui_time: 0.0,
             last_activity: (0.0, 0),
             last_edit: (0.0, 0),
@@ -497,8 +527,11 @@ impl EffectcraftApp {
         ctx.all_styles_mut(|s| s.interaction.tooltip_delay = if tips { 0.5 } else { f32::INFINITY });
         // Settings ▸ Appearance ▸ UI Scale (#284). egui's own Ctrl+= / Ctrl+- / Ctrl+0 zoom stays
         // off: Ctrl+0 is Window ▸ Project, and the scale is a setting.
-        ctx.options_mut(|o| o.zoom_with_keyboard = false);
-        ctx.set_zoom_factor(p.appearance.ui_scale as f32 / 100.0);
+        // (Inside Fossa Direct the window's scale is its host's.)
+        if !fossa_hosted() {
+            ctx.options_mut(|o| o.zoom_with_keyboard = false);
+            ctx.set_zoom_factor(p.appearance.ui_scale as f32 / 100.0);
+        }
         self.ui.cache_when_idle = p.previews.cache_frames_when_idle;
         self.ui.viewer.fast_preview = p.previews.fast_previews;
         self.frames.set_budget(p.cache_budgets(self.session.sys_memory).preview);
@@ -762,7 +795,7 @@ impl EffectcraftApp {
         if let Some(tell) = &self.hooks.device_lost {
             tell(saved);
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        window_cmd(ctx, egui::ViewportCommand::Close);
     }
 
     /// Run the commands whose non-blocking file dialogs have been answered.
@@ -775,6 +808,11 @@ impl EffectcraftApp {
     /// Set up the GPU compositor on egui-wgpu's device (once). Without an adapter that runs
     /// compute shaders (WebGL2, software GL) everything stays on the CPU.
     pub(crate) fn init_gpu(&mut self, frame: &eframe::Frame) {
+        self.init_gpu_on(frame.wgpu_render_state());
+    }
+
+    /// [`Self::init_gpu`] on the window's wgpu state `rs`.
+    pub(crate) fn init_gpu_on(&mut self, rs: Option<&eframe::egui_wgpu::RenderState>) {
         if self.gpu_checked {
             return;
         }
@@ -782,7 +820,7 @@ impl EffectcraftApp {
         if self.gpu_failures.as_ref().is_some_and(|bridge| bridge.failure().is_some()) {
             return;
         }
-        let Some(rs) = frame.wgpu_render_state() else { return };
+        let Some(rs) = rs else { return };
         // Help ▸ System Compatibility Report names the adapter and backend the window got.
         let info = rs.adapter.get_info();
         self.session.window_adapter = Some(format!(
@@ -1552,7 +1590,11 @@ impl EffectcraftApp {
             any = true;
             // Wait for the viewer's frame to finish rendering (bounded by the timeout below).
             if now >= *at && *frames >= 3 && (!busy || now > *at + 2.5) {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(*token)));
+                let (tx, token, repaint) = (self.screenshots.0.clone(), *token, ctx.clone());
+                window_cmd(ctx, egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |image| {
+                    let _ = tx.send((token, image));
+                    repaint.request_repaint();
+                })));
                 false
             } else {
                 true
@@ -1577,19 +1619,7 @@ impl EffectcraftApp {
         if self.pending_screenshots.is_empty() {
             return;
         }
-        let events: Vec<_> = ctx.input(|i| {
-            i.raw
-                .events
-                .iter()
-                .filter_map(|e| match e {
-                    egui::Event::Screenshot { user_data, image, .. } => {
-                        let token = user_data.data.as_ref().and_then(|d| d.downcast_ref::<u64>()).copied()?;
-                        Some((token, image.clone()))
-                    }
-                    _ => None,
-                })
-                .collect()
-        });
+        let events: Vec<_> = self.screenshots.1.try_iter().collect();
         for (token, image) in events {
             if let Some(i) = self.pending_screenshots.iter().position(|(t, ..)| *t == token) {
                 let (_, path, crop, reply, _) = self.pending_screenshots.remove(i);
@@ -1675,10 +1705,13 @@ impl EffectcraftApp {
         self.run_script_tasks(&ctx);
         self.apply_prefs(&ctx);
         self.handle_events(&ctx);
-        panels::unsaved::on_close_requested(self, &ctx);
+        // Inside Fossa Direct the window, its title and closing it are the host's.
+        if !fossa_hosted() {
+            panels::unsaved::on_close_requested(self, &ctx);
+        }
         let title = panels::unsaved::window_title(self);
         if title != self.window_title {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            window_cmd(&ctx, egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;
         }
         self.tick_autosave(&ctx);
@@ -1715,8 +1748,11 @@ impl EffectcraftApp {
         header::show(self, ui, header);
         let body = egui::Rect::from_min_max(egui::pos2(full.min.x + 4.0, header.max.y + 2.0), egui::pos2(full.max.x - 4.0, full.max.y - 4.0));
         self.dock_area(ui, body);
+        // (Fossa Direct hands files to its desk: `fossa_native::Desk::open`.)
         #[cfg(not(target_arch = "wasm32"))]
-        prefs_live::dropped_files(self, ui, full);
+        if !fossa_hosted() {
+            prefs_live::dropped_files(self, ui, full);
+        }
         if !tab_had_widget_focus {
             menus::handle_tab_shortcut(self, &ctx);
         }
@@ -1765,18 +1801,18 @@ impl EffectcraftApp {
             ui.painter().rect_stroke(r, 6.0, egui::Stroke::new(1.0, t.field_border), egui::StrokeKind::Inside);
             ui.painter().galley(r.min + egui::vec2(12.0, 7.0), galley, t.text);
             self.auto.add("toast", r, &m);
-            let resp = ui.interact(r, egui::Id::new("toast"), egui::Sense::click());
+            let resp = ui.interact(r, crate::id("toast"), egui::Sense::click());
             if resp.clicked() {
                 self.ui.status.clear();
                 self.toast = None;
             }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
             if !self.ui.status.is_empty() {
-                let since: f64 = ui.data(|d| d.get_temp(egui::Id::new("status-since")).unwrap_or(now));
-                ui.data_mut(|d| d.insert_temp(egui::Id::new("status-since"), since));
+                let since: f64 = ui.data(|d| d.get_temp(crate::id("status-since")).unwrap_or(now));
+                ui.data_mut(|d| d.insert_temp(crate::id("status-since"), since));
                 if now - since > 5.0 {
                     self.ui.status.clear();
-                    ui.data_mut(|d| d.remove::<f64>(egui::Id::new("status-since")));
+                    ui.data_mut(|d| d.remove::<f64>(crate::id("status-since")));
                 }
             }
         }
@@ -1813,7 +1849,7 @@ impl EffectcraftApp {
         }
         // File ▸ Watch Folder: look for new projects every 10 seconds.
         if self.session.state.watch_folder.is_some() {
-            let key = egui::Id::new("watchFolder.lastPoll");
+            let key = crate::id("watchFolder.lastPoll");
             let last: f64 = ctx.data(|d| d.get_temp(key)).unwrap_or(0.0);
             if now - last >= 10.0 {
                 ctx.data_mut(|d| d.insert_temp(key, now));
@@ -1839,7 +1875,7 @@ impl EffectcraftApp {
         if let Some(Err(e)) = footage_reload::poll_scan(&mut self.session) {
             self.ui.status = e.to_string();
         }
-        let (last_key, focus_key) = (egui::Id::new("footageReload.lastScan"), egui::Id::new("footageReload.focused"));
+        let (last_key, focus_key) = (crate::id("footageReload.lastScan"), crate::id("footageReload.focused"));
         let focused = ctx.input(|i| i.focused);
         let was_focused: bool = ctx.data(|d| d.get_temp(focus_key)).unwrap_or(focused);
         ctx.data_mut(|d| d.insert_temp(focus_key, focused));
@@ -1890,10 +1926,17 @@ impl eframe::App for EffectcraftApp {
         let language = crate::i18n::language(self);
         crate::i18n::set_current(language);
         if !self.styled || self.styled_language != language {
-            theme::install(ctx, &self.tokens, language);
+            if fossa_hosted() {
+                theme::install_hosted(ctx, &self.tokens, language);
+            } else {
+                theme::install(ctx, &self.tokens, language);
+            }
             self.styled_language = language;
             if !self.styled {
-                fit_window(ctx);
+                // (Inside Fossa Direct the window's size is its host's.)
+                if !fossa_hosted() {
+                    fit_window(ctx);
+                }
                 self.styled = true;
             }
             ctx.request_repaint();
@@ -1930,8 +1973,11 @@ impl eframe::App for EffectcraftApp {
         }
         self.frame(ui);
         let ctx = ui.ctx().clone();
+        // (Not inside a host's window: wrapping needs the raw input hook it doesn't call.)
         #[cfg(not(target_arch = "wasm32"))]
-        pointer_wrap::finish_native(&ctx, frame);
+        if !fossa_hosted() {
+            pointer_wrap::finish_native(&ctx, frame);
+        }
         // wasm32: no frame threads; render queued frames now, between UI frames.
         if cfg!(target_arch = "wasm32") && self.frames.pump(std::time::Duration::from_millis(if self.playback.playing { 24 } else { 40 })) {
             ctx.request_repaint();
@@ -1977,7 +2023,7 @@ fn fit_window(ctx: &egui::Context) {
     if let (Some(monitor), Some(window)) = (monitor, window)
         && overflows_screen(window.size(), monitor)
     {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+        window_cmd(ctx, egui::ViewportCommand::Maximized(true));
     }
 }
 

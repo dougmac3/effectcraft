@@ -13,7 +13,7 @@ use crate::{EffectcraftApp, panels};
 use craft_ui::docking::{Action, DropTarget, resolve_drop};
 
 fn drag_id() -> egui::Id {
-    egui::Id::new("dock-tab-drag")
+    crate::id("dock-tab-drag")
 }
 
 impl EffectcraftApp {
@@ -242,7 +242,7 @@ impl EffectcraftApp {
                 .get(*index)
                 .and_then(|group| group.panels.first())
                 .and_then(|panel| {
-                    let id = egui::Id::new(("floating-panel", panel.id()));
+                    let id = crate::id(("floating-panel", panel.id()));
                     layers.iter().position(|layer| layer.id == id)
                 })
                 .unwrap_or(usize::MAX)
@@ -284,7 +284,7 @@ impl EffectcraftApp {
                     let _ = self.dock_command(&ctx, Action::Close { panel: p });
                 }
                 DockAction::PanelMenu(p, pos) => {
-                    ctx.data_mut(|d| d.insert_temp(egui::Id::new("panel-menu"), (p, pos)));
+                    ctx.data_mut(|d| d.insert_temp(crate::id("panel-menu"), (p, pos)));
                 }
                 DockAction::BeginDrag(p) => ctx.data_mut(|d| {
                     d.insert_temp(drag_id(), p);
@@ -321,14 +321,14 @@ impl EffectcraftApp {
     ) -> Option<(Group, Vec<(PanelKind, Rect)>)> {
         let t = self.tokens;
         let f = self.ui.floating.get(i)?.clone();
-        let screen = ctx.content_rect();
+        let screen = crate::screen(ctx);
         let mut rect = Rect::from_min_size(pos2(f.rect[0], f.rect[1]), vec2(f.rect[2].max(160.0), f.rect[3].max(100.0)));
         // Keep the strip reachable.
         rect = rect.translate(vec2(
             (screen.min.x - rect.min.x).max(0.0) + (screen.max.x - 40.0 - rect.min.x).min(0.0),
             (screen.min.y - rect.min.y).max(0.0) + (screen.max.y - 30.0 - rect.min.y).min(0.0),
         ));
-        let id = egui::Id::new(("floating-panel", f.panels.first().map(|p| p.id()).unwrap_or_default()));
+        let id = crate::id(("floating-panel", f.panels.first().map(|p| p.id()).unwrap_or_default()));
         let mut group = None;
         // Not constrained to the window: the group is drawn where its rect says (the clamp above
         // keeps its strip reachable), so it follows the pointer past the window's edges.
@@ -364,7 +364,7 @@ impl EffectcraftApp {
             // Resize from the corner.
             let grip = Rect::from_min_max(r.max - vec2(14.0, 14.0), r.max);
             let rs = ui.interact(grip, id.with("resize"), Sense::click_and_drag());
-            rs.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, rs.enabled(), crate::i18n::tr("Resize floating panel")));
+            rs.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, rs.enabled(), crate::i18n::tr("Resize floating panel")));
             self.auto.add_response(&format!("panel.float.{i}.resize"), &rs, "Resize floating panel");
             for k in 0..3 {
                 let o = 4.0 + k as f32 * 4.0;
@@ -435,7 +435,7 @@ impl EffectcraftApp {
             if !self.ui.dock.contains(p) {
                 return Err(format!("{} is not open", p.title()));
             }
-            let rect = default_float_rect(ctx.input_for(egui::ViewportId::ROOT, |i| i.content_rect()));
+            let rect = default_float_rect(crate::screen(ctx));
             if !self.edit_layout(|layout| layout.float(p, rect)) {
                 return Err(format!("can't undock {}", p.title()));
             }
@@ -560,7 +560,7 @@ impl EffectcraftApp {
         let over_group = targets.iter().any(|target| target.rect.contains(pos));
         let float_drop = ctx.input(|i| i.modifiers.command);
         let plan = (!float_drop).then(|| resolve_drop(&p, pos, &targets)).flatten();
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("dock-drop")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, crate::id("dock-drop")));
         if let Some(proposal) = &plan {
             let preview = proposal.preview.shrink(2.0);
             painter.rect_filled(preview, t.radius, t.focus.gamma_multiply(0.18));
@@ -610,7 +610,7 @@ pub fn panel_window_id(panel: PanelKind) -> egui::ViewportId {
 
 /// Where a native panel window was told to open (kept for as long as it stays open).
 fn panel_window_spawn_id(panel: PanelKind) -> egui::Id {
-    egui::Id::new(("panel-window-spawn", panel.id()))
+    crate::id(("panel-window-spawn", panel.id()))
 }
 
 /// A new floating group's default rect near the centre of `screen`.

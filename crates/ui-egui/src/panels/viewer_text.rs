@@ -41,10 +41,10 @@ enum Drag {
 }
 
 fn drag_id() -> egui::Id {
-    egui::Id::new("viewer-text-drag")
+    crate::id("viewer-text-drag")
 }
 fn focus_id() -> egui::Id {
-    egui::Id::new("viewer-text-focus")
+    crate::id("viewer-text-focus")
 }
 
 /// The geometry of an edited text layer.
@@ -164,7 +164,7 @@ pub fn panel_clicked(app: &mut EffectcraftApp, ctx: &egui::Context, p: PanelKind
 
 /// Typing merge key: consecutive keystrokes fold into one undo step until the caret moves.
 fn typing_key(ui: &egui::Ui, bump: bool) -> String {
-    let id = egui::Id::new("viewer-text-typing");
+    let id = crate::id("viewer-text-typing");
     let mut n: u64 = ui.data(|d| d.get_temp(id)).unwrap_or(0);
     if bump {
         n += 1;
@@ -186,7 +186,7 @@ pub fn hook(
 ) -> bool {
     let tool = app.ui.tool;
     let type_tool = matches!(tool, Tool::Type | Tool::TypeVertical);
-    let last_tool_id = egui::Id::new("viewer-text-last-tool");
+    let last_tool_id = crate::id("viewer-text-last-tool");
     let last_tool = ui.data(|d| d.get_temp::<Tool>(last_tool_id));
     ui.data_mut(|d| d.insert_temp(last_tool_id, tool));
     if last_tool.is_some_and(|previous| matches!(previous, Tool::Type | Tool::TypeVertical) && !type_tool) {
@@ -360,7 +360,7 @@ pub fn hook(
             m.set_focus_lock_filter(focus_id(), egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true });
         });
         // A session started elsewhere (menu, agent, Properties) takes the keyboard once…
-        let seen = egui::Id::new("viewer-text-seen");
+        let seen = crate::id("viewer-text-seen");
         let key = app.session.state.text_edit.as_ref().map(|e| e.layer.0);
         // …and gets it back when a click in the viewer or a formatting panel left nothing holding
         // it; not merely because nothing has the focus (#831).
@@ -373,7 +373,7 @@ pub fn hook(
             keyboard(app, ui, resp.rect);
         }
     } else {
-        ui.data_mut(|d| d.insert_temp::<Option<u64>>(egui::Id::new("viewer-text-seen"), None));
+        ui.data_mut(|d| d.insert_temp::<Option<u64>>(crate::id("viewer-text-seen"), None));
         if ui.memory(|m| m.has_focus(focus_id())) {
             ui.memory_mut(|m| m.surrender_focus(focus_id()));
         }
@@ -405,10 +405,10 @@ fn keyboard(app: &mut EffectcraftApp, ui: &mut egui::Ui, viewer: Rect) {
             egui::Event::Ime(egui::ImeEvent::Commit(t)) if !t.is_empty() => {
                 let k = typing_key(ui, false);
                 exec(app, "text.insert", json!({"text": t, "merge": k}));
-                ui.data_mut(|d| d.remove::<String>(egui::Id::new("viewer-text-preedit")));
+                ui.data_mut(|d| d.remove::<String>(crate::id("viewer-text-preedit")));
             }
             egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
-                ui.data_mut(|d| d.insert_temp(egui::Id::new("viewer-text-preedit"), text));
+                ui.data_mut(|d| d.insert_temp(crate::id("viewer-text-preedit"), text));
             }
             egui::Event::Copy => {
                 if let Some(v) = exec(app, "edit.copy", json!({}))
@@ -545,7 +545,7 @@ fn draw(app: &mut EffectcraftApp, ui: &mut egui::Ui, painter: &egui::Painter, ma
     let (a, b) = (anim(a), anim(b));
     let (sa, sb) = (to_s(a), to_s(b));
     let now = ui.input(|i| i.time);
-    let preedit: Option<String> = ui.data(|d| d.get_temp(egui::Id::new("viewer-text-preedit")));
+    let preedit: Option<String> = ui.data(|d| d.get_temp(crate::id("viewer-text-preedit")));
     if let Some(pe) = preedit.filter(|s| !s.is_empty()) {
         let h = (sb - sa).length().max(10.0);
         let g = painter.layout_no_wrap(pe, egui::FontId::proportional(h * 0.7), Color32::WHITE);

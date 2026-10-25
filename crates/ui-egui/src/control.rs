@@ -373,6 +373,7 @@ pub fn handle(app: &mut EffectcraftApp, ctx: &egui::Context, req: &ControlReques
                 delta: egui::vec2(dx, dy),
                 modifiers: modifiers(p),
                 phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
             });
             app.synthetic.push(egui::Event::PointerButton {
                 pos: egui::pos2(-100.0, -100.0),
@@ -447,12 +448,12 @@ pub fn handle(app: &mut EffectcraftApp, ctx: &egui::Context, req: &ControlReques
         "ui.resize" => {
             let w = p.get("width").and_then(Value::as_f64).unwrap_or(1600.0) as f32;
             let h = p.get("height").and_then(Value::as_f64).unwrap_or(1000.0) as f32;
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+            crate::window_cmd(ctx, egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
             ok(Value::Null)
         }
         "ui.focus" => {
             // Explicit request: activate the app and take keyboard focus.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            crate::window_cmd(ctx, egui::ViewportCommand::Focus);
             ok(Value::Null)
         }
         "app.quit" => {
@@ -460,7 +461,7 @@ pub fn handle(app: &mut EffectcraftApp, ctx: &egui::Context, req: &ControlReques
             if p.get("force").and_then(Value::as_bool).unwrap_or(false) {
                 app.dialog_state.unsaved.quitting = true;
             }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            crate::window_cmd(ctx, egui::ViewportCommand::Close);
             ok(Value::Null)
         }
         m => err(format!("unknown method `{m}`")),

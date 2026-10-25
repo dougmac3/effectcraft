@@ -165,7 +165,7 @@ pub fn route_layer_settings(app: &mut EffectcraftApp, id: &str, params: &Value) 
 
 /// The room a modal dialog may take: the window less a margin.
 pub(crate) fn modal_space(ctx: &egui::Context) -> egui::Vec2 {
-    (ctx.content_rect().size() - vec2(48.0, 48.0)).max(vec2(120.0, 80.0))
+    (crate::screen(ctx).size() - vec2(48.0, 48.0)).max(vec2(120.0, 80.0))
 }
 
 pub(crate) fn modal(ctx: &egui::Context, title: &str, size: egui::Vec2, t: &Tokens, body: impl FnOnce(&mut egui::Ui)) {
@@ -189,14 +189,19 @@ fn modal_with_scroll(ctx: &egui::Context, title: &str, size: egui::Vec2, t: &Tok
 /// window.
 pub(crate) fn modal_fit(ctx: &egui::Context, title: &str, size: egui::Vec2, t: &Tokens, body: impl FnOnce(&mut egui::Ui, f32)) {
     let size = size.min(modal_space(ctx));
-    let id = egui::Id::new(("modal", title));
+    let id = crate::id(("modal", title));
     // Dragging the title row moves the dialog off what it edits. The offset is kept within the
     // window, so dragging back never has to undo a part the dialog could not follow.
     let offset_id = id.with("offset");
-    let room = ((ctx.content_rect().size() - size) * 0.5).max(vec2(0.0, 0.0));
+    let room = ((crate::screen(ctx).size() - size) * 0.5).max(vec2(0.0, 0.0));
     let offset = ctx.data(|d| d.get_temp::<egui::Vec2>(offset_id)).unwrap_or_default().clamp(-room, room);
     egui::Modal::new(id)
-        .area(egui::Modal::default_area(id).anchor(Align2::CENTER_CENTER, offset))
+        .area(if crate::fossa_hosted() {
+            // Over the desk, not the middle of its host's window.
+            egui::Modal::default_area(id).pivot(Align2::CENTER_CENTER).fixed_pos(crate::screen(ctx).center() + offset)
+        } else {
+            egui::Modal::default_area(id).anchor(Align2::CENTER_CENTER, offset)
+        })
         .backdrop_color(Color32::from_black_alpha(120))
         .frame(egui::Frame::window(&ctx.style_of(ctx.theme())).fill(t.panel_bg).inner_margin(egui::Margin::same(18)))
         .show(ctx, |ui| {
@@ -273,7 +278,7 @@ const CREDITS_HEIGHT: f32 = 380.0;
 fn about(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
     let mut close = false;
     let mut cmd: Option<&str> = None;
-    let tab_id = egui::Id::new("about_tab");
+    let tab_id = crate::id("about_tab");
     modal(ctx, "About EffectCraft", vec2(680.0, 520.0), t, |ui| {
         let mut tab = ui.data_mut(|d| d.get_temp::<usize>(tab_id)).unwrap_or(0);
         ui.horizontal(|ui| {
@@ -468,7 +473,7 @@ fn solid(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
         (ds.solid_name.clone(), ds.solid_color, ds.solid_size, ds.solid_pixel_aspect, ds.solid_affect_all);
     let (editing, shared) = (ds.solid_layer, ds.solid_shared);
     let comp_size = app.session.active_comp().map(|c| (c.width, c.height)).unwrap_or((1920, 1080));
-    let lock_id = egui::Id::new("solid-lock-aspect");
+    let lock_id = crate::id("solid-lock-aspect");
     let mut lock = ctx.data(|m| m.get_temp::<bool>(lock_id)).unwrap_or(true);
     let auto = &mut app.auto;
     modal(ctx, "Solid Settings", vec2(480.0, if editing.is_some() { 430.0 } else { 390.0 }), t, |ui| {
@@ -737,7 +742,7 @@ mod tests {
         assert_eq!(app.dialog_state.palette_query, "nihao");
         // Something else taking the keyboard takes it away for a frame; the field claims it back
         // (a request is what gets the keys back, and there is no composition to interrupt then).
-        ctx.memory_mut(|m| m.request_focus(egui::Id::new("elsewhere")));
+        ctx.memory_mut(|m| m.request_focus(crate::id("elsewhere")));
         assert!(frame_with(&mut app, &ctx, vec![]).platform_output.ime.is_none(), "the field lost the keyboard");
         assert!(frame_with(&mut app, &ctx, vec![]).platform_output.ime.is_some(), "and takes it back");
     }

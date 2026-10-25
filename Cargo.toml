@@ -105,9 +105,9 @@ pollster = "0.4"
 # ui
 # Shared frontend components; keep this dependency above the engine boundary.
 craft-ui = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "5c874d51eeb3de70e735c8ce87a59a7dedd47675", features = ["serde"] }
-egui = "0.36"
-eframe = { version = "0.36", default-features = false }
-egui_kittest = "0.36"
+egui = "0.37"
+eframe = { version = "0.37", default-features = false }
+egui_kittest = "0.37"
 rfd = "0.17"
 cpal = "0.16"
 # The operating system's interface language (MIT/Apache-2.0, no dependencies on desktop).
@@ -209,6 +209,10 @@ opt-level = 3
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# craft-ui moved to egui 0.37 (vendor/craft-ui/Cargo.toml says why).
+[patch."https://github.com/storytold/craft-libs"]
+craft-ui = { path = "vendor/craft-ui" }
 
 [patch.crates-io]
 hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "ca50d63b773c99f96e75c77ce5a1d21e7c9cda0d", version = "=0.7.2" }

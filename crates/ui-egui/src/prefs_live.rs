@@ -29,7 +29,7 @@ pub fn dropped_files(app: &mut EffectcraftApp, ui: &egui::Ui, bounds: Rect) {
     if hovered != 0 {
         let label =
             if hovered == 1 { crate::i18n::tr("Drop file to import").to_string() } else { crate::i18n::tr_args("Drop {} files to import", &[&hovered]) };
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("native-file-drop")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, crate::id("native-file-drop")));
         painter.rect_stroke(bounds.shrink(8.0), 6.0, Stroke::new(2.0, app.tokens.accent), StrokeKind::Inside);
         let hint = Rect::from_center_size(bounds.center(), vec2(300.0, 46.0));
         painter.rect_filled(hint, 6.0, app.tokens.panel_bg);
@@ -122,7 +122,7 @@ pub fn dropped_files(app: &mut EffectcraftApp, ui: &egui::Ui, bounds: Rect) {
 /// reading starts PowerShell in the background, so it isn't done more often).
 fn memory_watch(app: &mut EffectcraftApp, ctx: &egui::Context) {
     let now = ctx.input(|i| i.time);
-    let id = egui::Id::new("prefs-memory-watch");
+    let id = crate::id("prefs-memory-watch");
     let last = ctx.data(|d| d.get_temp::<f64>(id));
     if last.is_some_and(|t| now - t < 30.0) {
         return;
@@ -136,7 +136,7 @@ fn memory_watch(app: &mut EffectcraftApp, ctx: &egui::Context) {
 
 /// Startup ▸ Show Home Screen When Opening a Project.
 fn home_on_open(app: &mut EffectcraftApp, ctx: &egui::Context) {
-    let id = egui::Id::new("prefs-last-project");
+    let id = crate::id("prefs-last-project");
     let path = app.session.path.clone();
     let last = ctx.data(|d| d.get_temp::<Option<String>>(id));
     ctx.data_mut(|d| d.insert_temp(id, path.clone()));
@@ -169,7 +169,7 @@ fn video_preview(app: &mut EffectcraftApp, ctx: &egui::Context) {
         return;
     }
     let v = app.session.prefs.video.clone();
-    let tex_id = egui::Id::new("video-preview-tex");
+    let tex_id = crate::id("video-preview-tex");
     let update = !app.playback.playing || v.output_during_playback;
     let key = app.viewer_shown.as_ref().map(|(_, k)| *k);
     let cur: Option<(FrameKey, egui::TextureHandle)> = ctx.data(|d| d.get_temp(tex_id));

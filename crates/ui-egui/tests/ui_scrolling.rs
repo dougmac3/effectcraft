@@ -36,6 +36,7 @@ fn wheel(h: &mut Harness<'_, EffectcraftApp>, at: Pos2, dy: f32) {
         delta: vec2(0.0, dy),
         modifiers: Default::default(),
         phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Unknown,
     });
     h.run_steps(20);
 }
@@ -159,6 +160,7 @@ fn settings_dialog_does_not_scroll_sideways() {
         delta: vec2(-400.0, 0.0),
         modifiers: Default::default(),
         phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Unknown,
     });
     h.run_steps(20);
     assert_eq!((rect(&h, "settings.ok"), rect(&h, "settings.page.general")), (ok, page), "nothing moved sideways");

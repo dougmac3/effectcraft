@@ -33,6 +33,8 @@ image = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 sys-locale = { workspace = true }
+# `fossa_native`: the desk Fossa Direct hosts builds its session as the desktop app does.
+effectcraft-host = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }

@@ -70,7 +70,7 @@ fn interactive(ctx: &egui::Context) -> Vec<(Rect, String)> {
                 }
                 let info = w.info(r.id);
                 // Selectable text (labels sense drags to select their text) is not a control.
-                if info.is_some_and(|i| i.typ == egui::WidgetType::Label) {
+                if info.is_some_and(|i| i.role == egui::Role::Label) {
                     continue;
                 }
                 out.push((ir, info.and_then(|i| i.label.clone()).unwrap_or_default()));

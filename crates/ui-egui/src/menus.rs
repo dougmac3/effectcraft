@@ -366,7 +366,7 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
         return invoke(app, ctx, "project.delete", json!({}));
     }
     if id == "edit.clear" && params.as_object().is_some_and(|p| p.is_empty()) && app.ui.focused == PanelKind::RenderQueue {
-        let selected = ctx.data(|d| d.get_temp::<(Vec<u64>, Option<u64>)>(egui::Id::new("rq-ui"))).and_then(|(_, id)| id);
+        let selected = ctx.data(|d| d.get_temp::<(Vec<u64>, Option<u64>)>(crate::id("rq-ui"))).and_then(|(_, id)| id);
         return match selected {
             Some(item) => run_engine(app, ctx, "renderQueue.remove", json!({"item": item})),
             None => Err("select a Render Queue item first".into()),
@@ -562,7 +562,7 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
                 let p = panel_of("panel").ok_or("floatPanel: need `panel`")??;
                 let r = match params.get("rect") {
                     Some(value) => serde_json::from_value::<[f32; 4]>(value.clone()).map_err(|_| "rect must contain four finite numbers")?,
-                    None => crate::dock_ui::default_float_rect(ctx.content_rect()),
+                    None => crate::dock_ui::default_float_rect(crate::screen(ctx)),
                 };
                 if !app.edit_layout(|l| l.float(p, r)) {
                     return Err(format!("can't undock {}", p.title()));
@@ -980,13 +980,13 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
                 return Ok(Value::Null);
             }
             match id {
-                "app.hide" => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
+                "app.hide" => crate::window_cmd(ctx, egui::ViewportCommand::Minimized(true)),
                 _ => return Err(format!("`{id}` is only available on macOS")),
             }
             Value::Null
         }
         "app.quit" => {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            crate::window_cmd(ctx, egui::ViewportCommand::Close);
             Value::Null
         }
         "app.commandPalette" => {
@@ -1009,7 +1009,7 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             // host's system sound (the desktop app handles `renderQueue.notify`).
             let msg = p.get("message").and_then(Value::as_str).unwrap_or("Render finished").to_string();
             app.toast = Some((msg, now));
-            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
+            crate::window_cmd(ctx, egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
             if let Some(f) = app.hooks.app_action.as_ref() {
                 f("renderQueue.notify");
             }
@@ -1121,12 +1121,12 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
         // Ctrl+\ / Cmd+\, as in After Effects (#336): `{maximized}`, the window's new state.
         "window.maximizeApp" => {
             let maximized = !ctx.input(|i| i.viewport().maximized.unwrap_or(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(maximized));
+            crate::window_cmd(ctx, egui::ViewportCommand::Maximized(maximized));
             json!({"maximized": maximized})
         }
         "view.fullScreen" => {
             let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+            crate::window_cmd(ctx, egui::ViewportCommand::Fullscreen(!full));
             json!(!full)
         }
         "window.panel" => {
@@ -1227,7 +1227,7 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
         "view.lookAt" => {
             let r: Vec<f64> = p.get("rect").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
             if r.len() == 4 {
-                let map: Option<crate::panels::viewer::ViewerMap> = ctx.data(|d| d.get_temp(egui::Id::new("viewer-map")));
+                let map: Option<crate::panels::viewer::ViewerMap> = ctx.data(|d| d.get_temp(crate::id("viewer-map")));
                 if let Some(m) = map {
                     let (rw, rh) = (((r[2] - r[0]) as f32).max(1.0), ((r[3] - r[1]) as f32).max(1.0));
                     let zoom = ((m.area.width() - 40.0) / rw).min((m.area.height() - 40.0) / rh).clamp(0.015, 32.0);
@@ -1251,7 +1251,7 @@ pub fn frontend(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, p: Valu
             Value::Null
         }
         "comp.miniFlowchart" => {
-            let at = ctx.input(|i| i.pointer.hover_pos()).unwrap_or_else(|| ctx.content_rect().center());
+            let at = ctx.input(|i| i.pointer.hover_pos()).unwrap_or_else(|| crate::screen(ctx).center());
             app.ui.mini_flowchart = Some([at.x, at.y]);
             Value::Null
         }
@@ -1781,17 +1781,17 @@ fn mods_match(want: egui::Modifiers, got: egui::Modifiers) -> bool {
 /// run the Spacebar shortcut.
 /// The system clipboard's text of this frame's paste event, for the Edit ▸ Paste it runs.
 fn system_paste_id() -> egui::Id {
-    egui::Id::new("menus-system-paste")
+    crate::id("menus-system-paste")
 }
 
 fn space_tap_id() -> egui::Id {
-    egui::Id::new("spacebar-tap")
+    crate::id("spacebar-tap")
 }
 
 /// The modifiers held when this frame's input began: the state the last pass ended with, if it
 /// ran this (egui keeps only the state after the frame's events). Records this pass's state.
 fn modifiers_at_start(ctx: &egui::Context) -> Option<egui::Modifiers> {
-    let id = egui::Id::new("shortcut-modifiers");
+    let id = crate::id("shortcut-modifiers");
     let pass = ctx.cumulative_pass_nr();
     let now = ctx.input(|i| i.modifiers);
     ctx.data_mut(|d| {

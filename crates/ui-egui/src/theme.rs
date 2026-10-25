@@ -352,6 +352,30 @@ pub fn install(ctx: &egui::Context, t: &Tokens, language: &str) {
     apply_visuals(ctx, t);
 }
 
+/// [`install`] inside a host's window (Fossa Direct): the bundled faces join the host's fonts
+/// instead of replacing them. The host's Proportional and Monospace stacks keep their faces
+/// first; the named families the panels use ("semibold", "medium") are added, and JetBrains Mono
+/// and the system script fallbacks go at the end of every stack, for the symbols and scripts the
+/// host's faces lack. Faces already added are skipped, so this runs again harmlessly.
+pub fn install_hosted(ctx: &egui::Context, t: &Tokens, language: &str) {
+    use egui::{FontInsert, FontPriority, InsertFontFamily};
+    let last = |families: &[FontFamily]| families.iter().map(|f| InsertFontFamily { family: f.clone(), priority: FontPriority::Lowest }).collect();
+    let (semibold, medium) = (FontFamily::Name("semibold".into()), FontFamily::Name("medium".into()));
+    let every = [FontFamily::Proportional, FontFamily::Monospace, semibold.clone(), medium.clone()];
+    ctx.add_font(FontInsert::new("inter-semibold", FontData::from_static(INTER_SEMIBOLD), last(&[semibold.clone()])));
+    ctx.add_font(FontInsert::new("inter-medium", FontData::from_static(INTER_MEDIUM), last(&[medium.clone()])));
+    ctx.add_font(FontInsert::new("inter", FontData::from_static(INTER_REGULAR), last(&[semibold, medium])));
+    ctx.add_font(FontInsert::new("jbmono", FontData::from_static(JETBRAINS_MONO), last(&every)));
+    let mut scripts = FontDefinitions::empty();
+    scripts.families.insert(FontFamily::Proportional, Vec::new());
+    for name in install_script_fallbacks(&mut scripts, language) {
+        if let Some(data) = scripts.font_data.remove(&name) {
+            ctx.add_font(FontInsert::new(&name, (*data).clone(), last(&every)));
+        }
+    }
+    apply_visuals(ctx, t);
+}
+
 /// Scripts the bundled fonts lack beyond CJK, each probed with one of its letters: names typed in
 /// them (layers, items, comments) are drawn by an installed face instead of missing-glyph boxes
 /// (#394). egui shapes each run of one face, so Arabic letters join and a word reads right to
@@ -729,7 +753,7 @@ mod tests {
         }
         let Some(font) = face.font() else { return };
         let bytes = font.data().as_bytes();
-        let covered = fonts_def.font_data.values().any(|d| d.font.as_ref() == bytes && d.index == face.info.index);
+        let covered = fonts_def.font_data.values().any(|d| (*d.font).as_ref() == bytes && d.index == face.info.index);
         assert!(covered, "a face covering Hangul must be registered with egui");
     }
 
@@ -745,7 +769,7 @@ mod tests {
             .iter()
             .map(|name| {
                 let data = fonts.font_data.get(name).unwrap_or_else(|| panic!("{name} is missing its font data"));
-                (data.font.as_ref(), data.index)
+                ((*data.font).as_ref(), data.index)
             })
             .collect();
         for (i, a) in faces.iter().enumerate() {
