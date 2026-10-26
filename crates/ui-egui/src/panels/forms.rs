@@ -889,16 +889,20 @@ pub fn show_form(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
         app.auto.add(&id, r, &l);
     }
     if let Some(i) = browse
-        && let Some(FieldKind::Path { value, exts }) = f.fields.get_mut(i).map(|f| &mut f.kind)
+        && let Some(FieldKind::Path { exts, .. }) = f.fields.get(i).map(|f| &f.kind)
     {
-        let exts: Vec<&str> = exts.iter().map(String::as_str).collect();
-        match app.hooks.pick_files.as_ref() {
-            Some(pick) => {
-                if let Some(path) = pick(&exts).into_iter().next() {
-                    *value = path;
-                }
+        // The picked file goes into the field of the form still open for that command.
+        let command = f.command.clone();
+        let picked = app.pick(crate::FileDialog::Open { exts: exts.clone(), many: false }, move |app, paths| {
+            if let Some(path) = paths.into_iter().next()
+                && app.dialog_state.form.command == command
+                && let Some(FieldKind::Path { value, .. }) = app.dialog_state.form.fields.get_mut(i).map(|f| &mut f.kind)
+            {
+                *value = path;
             }
-            None => app.ui.status = "no file dialog available: type the path".into(),
+        });
+        if !picked {
+            app.ui.status = "no file dialog available: type the path".into();
         }
     }
     if let Some(i) = browse

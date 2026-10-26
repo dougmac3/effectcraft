@@ -195,7 +195,7 @@ pub fn media_browser(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
                 }
             },
             _ => {
-                lp.text(thumb.center(), Align2::CENTER_CENTER, if e.is_dir { "▣" } else { kind }, Tokens::ui(if e.is_dir { 28.0 } else { 11.0 }), t.text_faint);
+                lp.text(thumb.center(), Align2::CENTER_CENTER, if e.is_dir { "\u{25a0}" } else { kind }, Tokens::ui(if e.is_dir { 28.0 } else { 11.0 }), t.text_faint);
             }
         }
         let name = if e.name.chars().count() > 20 { format!("{}…", e.name.chars().take(19).collect::<String>()) } else { e.name.clone() };

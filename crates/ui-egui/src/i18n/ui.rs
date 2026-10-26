@@ -556,7 +556,7 @@ const JAPANESE: &[(&str, &str)] = &[
     ("{} — coming soon", "{} — 近日対応予定"),
     ("{} — double-click to open, {}-click to reveal", "{} — ダブルクリックで開く、{}+クリックで場所を表示"),
     ("⌘/Ctrl-drag a pin to record its motion", "⌘/Ctrl+ドラッグでピンの動きを記録"),
-    ("▣ {}", "▣ {}"),
+    ("\u{25a0} {}", "\u{25a0} {}"),
     ("⚠ {} is used by:", "⚠ {}は次のコマンドで使用中:"),
     ("3D Reference Axes", "3D参照軸"),
     ("Affect all layers that use this solid", "この平面を使用するすべてのレイヤーに適用"),
@@ -1285,7 +1285,7 @@ const SIMPLIFIED_CHINESE: &[(&str, &str)] = &[
     ("{} — coming soon", "{} — 即将推出"),
     ("{} — double-click to open, {}-click to reveal", "{} — 双击打开，{}-单击可显示位置"),
     ("⌘/Ctrl-drag a pin to record its motion", "⌘/Ctrl 拖动定位点可记录其运动"),
-    ("▣ {}", "▣ {}"),
+    ("\u{25a0} {}", "\u{25a0} {}"),
     ("⚠ {} is used by:", "⚠ {} 已被以下项目使用："),
     // Strings a panel used to hand to a helper as a bare literal: the helper draws them (the
     // viewer's toolbar tooltips and popup items, the solid dialog's checkbox), so the lookup has
@@ -2025,7 +2025,7 @@ const TRADITIONAL_CHINESE: &[(&str, &str)] = &[
     ("{} — coming soon", "{} — 即將推出"),
     ("{} — double-click to open, {}-click to reveal", "{} — 連按兩下開啟，{}-按一下可顯示位置"),
     ("⌘/Ctrl-drag a pin to record its motion", "⌘/Ctrl 拖曳釘選點可記錄其運動"),
-    ("▣ {}", "▣ {}"),
+    ("\u{25a0} {}", "\u{25a0} {}"),
     ("⚠ {} is used by:", "⚠ {} 已被以下專案使用："),
     // The same rows as the Simplified catalog (the tests require both lists to match). The
     // Traditional wording is the translator's call and is left as the English source for now.
@@ -2779,7 +2779,7 @@ const UKRAINIAN: &[(&str, &str)] = &[
     ("{} — coming soon", "{} — незабаром"),
     ("{} — double-click to open, {}-click to reveal", "{} — двічі клацніть, щоб відкрити; клацніть із {}, щоб показати розташування"),
     ("⌘/Ctrl-drag a pin to record its motion", "Перетягніть опорну точку з ⌘/Ctrl, щоб записати її рух"),
-    ("▣ {}", "▣ {}"),
+    ("\u{25a0} {}", "\u{25a0} {}"),
     ("⚠ {} is used by:", "⚠ {} використовується в:"),
     ("Track", "Відстежити"),
     // Strings a panel used to hand to a helper as a bare literal: the helper draws them (the
@@ -3322,7 +3322,7 @@ const PORTUGUESE: &[(&str, &str)] = &[
     ("{} — coming soon", "{} em breve"),
     ("{} — double-click to open, {}-click to reveal", "{}: clique duas vezes para abrir, {}+clique para revelar"),
     ("⌘/Ctrl-drag a pin to record its motion", "⌘/Ctrl+arraste um pino para gravar seu movimento"),
-    ("▣ {}", "▣ {}"),
+    ("\u{25a0} {}", "\u{25a0} {}"),
     ("⚠ {} is used by:", "⚠ {} é usado por:"),
     ("Total Offset", "Deslocamento total"),
     ("Per Layer", "Por camada"),
@@ -3785,7 +3785,7 @@ const CZECH: &[(&str, &str)] = &[
     ("{} — coming soon", "{} — již brzy"),
     ("{} — double-click to open, {}-click to reveal", "{} — dvojklikem otevřete, kliknutím s {} zobrazíte umístění"),
     ("⌘/Ctrl-drag a pin to record its motion", "Tažením čepu s ⌘/Ctrl zaznamenáte jeho pohyb"),
-    ("▣ {}", "▣ {}"),
+    ("\u{25a0} {}", "\u{25a0} {}"),
     ("⚠ {} is used by:", "⚠ {} používají:"),
     ("3D Reference Axes", "Referenční osy 3D"),
     ("Affect all layers that use this solid", "Ovlivnit všechny vrstvy používající tuto plnou vrstvu"),
@@ -4353,7 +4353,7 @@ const SPANISH: &[(&str, &str)] = &[
     ("{} — coming soon", "{} — próximamente"),
     ("{} — double-click to open, {}-click to reveal", "{} — doble clic para abrir, clic con {} para mostrar"),
     ("⌘/Ctrl-drag a pin to record its motion", "⌘/Ctrl + arrastra un pin para grabar su movimiento"),
-    ("▣ {}", "▣ {}"),
+    ("\u{25a0} {}", "\u{25a0} {}"),
     ("⚠ {} is used by:", "⚠ {} se usa en:"),
     ("3D Reference Axes", "Ejes de referencia 3D"),
     ("Affect all layers that use this solid", "Afectar a todas las capas que usan este sólido"),

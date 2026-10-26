@@ -111,7 +111,7 @@ pub fn paint(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     }
     let swap = Rect::from_min_size(pos2(x0 + 46.0, y), vec2(18.0, 14.0));
     let sresp = ui.interact(swap, crate::id("paint-swap"), Sense::click());
-    p.text(swap.center(), Align2::CENTER_CENTER, "⇄", Tokens::ui(12.0), if sresp.hovered() { t.text } else { t.text_dim });
+    p.text(swap.center(), Align2::CENTER_CENTER, "\u{2194}", Tokens::ui(12.0), if sresp.hovered() { t.text } else { t.text_dim });
     app.auto.add("paint.swapColors", swap, "Swap colors");
     if sresp.on_hover_text(tr("Swap Paint Colors (X)")).clicked() {
         set(app, json!({"color": o.background, "background": o.color}));

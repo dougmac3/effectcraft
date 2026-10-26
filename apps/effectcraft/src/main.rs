@@ -18,7 +18,7 @@ mod appearance;
 mod appimage;
 #[cfg(target_os = "macos")]
 mod apple_events;
-mod audio_out;
+use effectcraft_ui_egui::audio_out;
 mod control_server;
 mod launch_guard;
 #[cfg(target_os = "macos")]

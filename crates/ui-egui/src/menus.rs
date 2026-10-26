@@ -313,6 +313,13 @@ pub fn invoke(app: &mut EffectcraftApp, ctx: &egui::Context, id: &str, params: V
     if crate::fossa_hidden(id) {
         return Ok(Value::Null);
     }
+    // Inside Fossa Direct, a layer context menu's Add to Shot: the desk hands those layers'
+    // pictures to the shot (`fossa_native::Desk::take_shot_requests`).
+    if id == "fossa.addToShot" {
+        let layers = params.get("layers").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect::<Vec<_>>()).unwrap_or_default();
+        app.shot_requests.extend(layers);
+        return Ok(Value::Null);
+    }
     if matches!(id, "effects.copyPresetsFolderPath" | "mediaBrowser.copySourcePath") {
         return frontend(app, ctx, id, params);
     }
@@ -2191,7 +2198,7 @@ pub(crate) fn dyn_ctx<'a>(workspace: &'a str, saved_workspaces: &'a [String]) ->
 /// The check-mark column every menu row reserves (like macOS / After Effects menus).
 fn gutter(checked: bool) -> egui::Atom<'static> {
     use egui::AtomExt;
-    (if checked { "✔" } else { "" }).atom_size(egui::vec2(14.0, 14.0))
+    (if checked { "\u{2713}" } else { "" }).atom_size(egui::vec2(14.0, 14.0))
 }
 
 fn menu_entry(app: &EffectcraftApp, ui: &mut egui::Ui, e: &MenuEntry) -> egui::Response {

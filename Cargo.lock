@@ -1135,7 +1135,6 @@ dependencies = [
 name = "effectcraft"
 version = "0.16.0"
 dependencies = [
- "cpal",
  "effectcraft-engine",
  "effectcraft-host",
  "effectcraft-ui-egui",
@@ -1621,6 +1620,7 @@ dependencies = [
 name = "effectcraft-ui-egui"
 version = "0.16.0"
 dependencies = [
+ "cpal",
  "craft-ui",
  "effectcraft-color",
  "effectcraft-engine",
@@ -1642,6 +1642,7 @@ dependencies = [
  "log",
  "pollster 0.4.0",
  "rayon",
+ "rfd",
  "serde",
  "serde_json",
  "sys-locale",

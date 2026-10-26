@@ -35,6 +35,11 @@ image = { workspace = true }
 sys-locale = { workspace = true }
 # `fossa_native`: the desk Fossa Direct hosts builds its session as the desktop app does.
 effectcraft-host = { workspace = true }
+# `fossa_native`: the desk's own file dialogs (off the UI thread) and preview sound, as the
+# desktop app has them (`audio_out`).
+rfd = { workspace = true }
+cpal = { workspace = true }
+pollster = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["eframe", "wgpu"] }

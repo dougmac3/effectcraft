@@ -51,7 +51,7 @@ fn snapshot(h: &mut Harness<'_, EffectcraftApp>, name: &str) {
 
 /// The open menu's Guide Layer item carries no check mark (a plain toggle).
 fn plain(h: &Harness<'_, EffectcraftApp>) -> bool {
-    !h.get_by_label_contains("Guide Layer").accesskit_node().label().unwrap_or_default().contains('✔')
+    !h.get_by_label_contains("Guide Layer").accesskit_node().label().unwrap_or_default().contains('\u{2713}')
 }
 
 fn row(h: &Harness<'_, EffectcraftApp>, id: LayerId) -> Pos2 {

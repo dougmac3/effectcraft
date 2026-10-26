@@ -8,6 +8,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 pub mod audio;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod audio_out;
 pub mod automation;
 pub mod bench;
 pub mod color_picker;
@@ -181,6 +183,9 @@ pub(crate) struct DialogAnswer {
     pub paths: Vec<String>,
 }
 
+/// What to do with a file dialog's paths once it is answered ([`EffectcraftApp::pick`]).
+type Then = Box<dyn FnOnce(&mut EffectcraftApp, Vec<String>)>;
+
 /// Host hooks provided by the native app (file pickers etc.).
 #[derive(Default)]
 pub struct Hooks {
@@ -321,6 +326,12 @@ pub struct EffectcraftApp {
     pub(crate) control_rx: Option<Receiver<ControlRequest>>,
     pub(crate) deferred: Vec<(ControlRequest, f64)>,
     pub(crate) synthetic: Vec<egui::Event>,
+    /// Panels' file dialogs shown without blocking, waiting for their answer.
+    pub(crate) picks: Vec<(Receiver<Vec<String>>, Then)>,
+    /// Effect Controls shows only this effect (group uid): Fossa Direct's card for one effect.
+    pub(crate) effect_only: Option<u64>,
+    /// Layers whose pictures Fossa Direct is asked to add to the shot (layer context menus).
+    pub shot_requests: Vec<u64>,
     pub(crate) input_waiters: Vec<Sender<serde_json::Value>>,
     /// Control requests waiting for an offloaded job (`wait: true` in the browser).
     pub(crate) job_waiters: Vec<(control::JobWaiter, Sender<serde_json::Value>)>,
@@ -432,6 +443,9 @@ impl EffectcraftApp {
             control_rx: None,
             deferred: vec![],
             synthetic: vec![],
+            picks: vec![],
+            effect_only: None,
+            shot_requests: vec![],
             input_waiters: vec![],
             job_waiters: vec![],
             queued_screenshots: vec![],
@@ -803,6 +817,58 @@ impl EffectcraftApp {
         while let Ok(answer) = self.dialog_answers.1.try_recv() {
             menus::dialog_answered(self, answer);
         }
+        let mut waiting = Vec::new();
+        for (rx, then) in std::mem::take(&mut self.picks) {
+            match rx.try_recv() {
+                Ok(paths) => then(self, paths),
+                Err(std::sync::mpsc::TryRecvError::Empty) => waiting.push((rx, then)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        self.picks.extend(waiting);
+    }
+
+    /// A panel's file dialog: `then` gets the picked paths (empty: cancelled), at once from the
+    /// host's blocking picker, or on a later frame from [`Hooks::file_dialog_async`] where the
+    /// host shows dialogs without blocking. False when the host has no such dialog.
+    pub(crate) fn pick(&mut self, dialog: FileDialog, then: impl FnOnce(&mut Self, Vec<String>) + 'static) -> bool {
+        if let Some(spawn) = self.hooks.file_dialog_async.as_ref() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            spawn(
+                dialog,
+                Box::new(move |paths| {
+                    let _ = tx.send(paths);
+                }),
+            );
+            self.picks.push((rx, Box::new(then)));
+            return true;
+        }
+        let h = &self.hooks;
+        let paths = match &dialog {
+            FileDialog::Open { exts, many } => {
+                let Some(f) = h.pick_files.as_ref() else { return false };
+                let exts: Vec<&str> = exts.iter().map(String::as_str).collect();
+                let mut p = f(&exts);
+                if !many {
+                    p.truncate(1);
+                }
+                p
+            }
+            FileDialog::OpenProject => match h.pick_open_project.as_ref() {
+                Some(f) => f().into_iter().collect(),
+                None => return false,
+            },
+            FileDialog::Folder => match h.pick_folder.as_ref() {
+                Some(f) => f().into_iter().collect(),
+                None => return false,
+            },
+            FileDialog::Save { default, .. } => match h.save_dialog(default) {
+                Some(p) => p.into_iter().collect(),
+                None => return false,
+            },
+        };
+        then(self, paths);
+        true
     }
 
     /// Set up the GPU compositor on egui-wgpu's device (once). Without an adapter that runs
@@ -1093,6 +1159,8 @@ impl EffectcraftApp {
     /// opens.
     fn start_audio(&mut self, t: Tick) {
         self.audio = None;
+        // One output stream at a time: scrubbing's closes.
+        self.scrub = None;
         self.meter.clipped = [false; 2];
         let (Some(pl), Some(cid)) = (self.playback.plan, self.session.active_comp_id()) else { return };
         let Some(c) = self.session.project.comp_arc(cid).filter(|_| self.audio_plays()) else { return };
@@ -1657,7 +1725,7 @@ impl EffectcraftApp {
         }
     }
 
-    fn frame(&mut self, ui: &mut egui::Ui) {
+    fn frame(&mut self, ui: &mut egui::Ui, panel: Option<PanelKind>) {
         let ctx = ui.ctx().clone();
         self.apply_gpu_failure(&ctx);
         self.run_dialog_answers();
@@ -1733,6 +1801,14 @@ impl EffectcraftApp {
         let full = ui.max_rect();
         if self.dialog.is_some() {
             ui.disable();
+        }
+        // One panel alone (Fossa Direct's cards): no menus, header or workspace around it.
+        if let Some(p) = panel {
+            ui.painter().rect_filled(full, 0.0, t.panel_bg);
+            self.panel_body(ui, p, full);
+            panels::dialogs::show(self, &ctx);
+            self.draw_toast(ui, full, 0.0);
+            return;
         }
         ui.painter().rect_filled(full, 0.0, t.app_bg);
         let mut top = full.min.y;
@@ -1962,6 +2038,18 @@ impl eframe::App for EffectcraftApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.run_ui(ui, frame, None);
+    }
+}
+
+impl EffectcraftApp {
+    /// One frame of only `panel` in `ui`'s rect, with the app's per-frame work as in
+    /// [`eframe::App::ui`] and the dialogs it opens (Fossa Direct's in-chat cards).
+    pub fn panel_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, panel: PanelKind) {
+        self.run_ui(ui, frame, Some(panel));
+    }
+
+    fn run_ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, panel: Option<PanelKind>) {
         if self.gpu_failure_applied == Some(true) {
             self.close_after_device_loss(ui.ctx());
             return;
@@ -1971,7 +2059,7 @@ impl eframe::App for EffectcraftApp {
             ui.ctx().request_repaint();
             return;
         }
-        self.frame(ui);
+        self.frame(ui, panel);
         let ctx = ui.ctx().clone();
         // (Not inside a host's window: wrapping needs the raw input hook it doesn't call.)
         #[cfg(not(target_arch = "wasm32"))]

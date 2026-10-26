@@ -299,10 +299,14 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
             }
             let b = ui.button(tr("Import..."));
             app.auto.add("shortcuts.import", b.rect, "Import");
-            if b.clicked()
-                && let Some(p) = app.hooks.pick_files.as_ref().and_then(|f| f(&["json"]).into_iter().next())
-            {
-                run.push(("shortcuts.import".into(), json!({"path": p})));
+            if b.clicked() {
+                app.pick(crate::FileDialog::Open { exts: vec!["json".into()], many: false }, |app, paths| {
+                    if let Some(p) = paths.into_iter().next()
+                        && let Err(e) = app.session.execute("shortcuts.import", json!({"path": p}))
+                    {
+                        app.ui.status = e.to_string();
+                    }
+                });
             }
             let b = ui.button(tr("Export..."));
             app.auto.add("shortcuts.export", b.rect, "Export");

@@ -161,7 +161,7 @@ impl EffectcraftApp {
         pos.and_then(|p| self.dock_rects.iter().rev().find(|(_, r)| r.contains(p)).map(|(k, _)| *k)).unwrap_or(self.ui.focused)
     }
 
-    fn panel_body(&mut self, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
+    pub(crate) fn panel_body(&mut self, ui: &mut egui::Ui, p: PanelKind, rect: Rect) {
         self.auto.add(&format!("panel.{}", p.id()), rect, p.title());
         let mut content = rect.shrink(1.0);
         let viewer = p == panels::viewers::active_panel(self);

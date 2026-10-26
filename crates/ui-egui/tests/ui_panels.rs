@@ -78,7 +78,7 @@ fn window_menu_closes_a_checked_panel() {
     open(&mut h, "align");
     assert!(shown(&h));
     click(&mut h, "menu.Window");
-    let at = h.query_by_label("✔ Align").expect("Window ▸ Align, checked").rect().center();
+    let at = h.query_by_label("\u{2713} Align").expect("Window ▸ Align, checked").rect().center();
     click_at(&mut h, at);
     assert!(!shown(&h), "Align closed");
     click(&mut h, "menu.Window");

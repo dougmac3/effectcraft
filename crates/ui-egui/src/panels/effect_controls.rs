@@ -84,7 +84,9 @@ pub fn reveal_applied(app: &mut EffectcraftApp, params: &serde_json::Value) {
 /// file dialog for their first empty file parameter and set the file on each; cancelling
 /// leaves the effect without one. Does nothing without a file dialog (tests, agents).
 pub fn choose_files_after_apply(app: &mut EffectcraftApp, applied: &serde_json::Value) {
-    let Some(pick) = app.hooks.pick_files.as_ref() else { return };
+    if app.hooks.pick_files.is_none() && app.hooks.file_dialog_async.is_none() {
+        return;
+    }
     let Some(comp) = app.session.active_comp() else { return };
     let uids: Vec<u64> = applied.get("effects").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_u64()).collect()).unwrap_or_default();
     let mut targets = vec![];
@@ -110,13 +112,14 @@ pub fn choose_files_after_apply(app: &mut EffectcraftApp, applied: &serde_json::
     if targets.is_empty() {
         return;
     }
-    let exts: Vec<&str> = filters.iter().map(String::as_str).collect();
-    let Some(path) = pick(&exts).into_iter().next() else { return };
-    for (layer, prop) in targets {
-        if let Err(e) = app.session.execute("prop.set", json!({"layer": layer, "prop": prop, "value": path})) {
-            app.ui.status = e.to_string();
+    app.pick(crate::FileDialog::Open { exts: filters, many: false }, move |app, paths| {
+        let Some(path) = paths.into_iter().next() else { return };
+        for (layer, prop) in targets {
+            if let Err(e) = app.session.execute("prop.set", json!({"layer": layer, "prop": prop, "value": path})) {
+                app.ui.status = e.to_string();
+            }
         }
-    }
+    });
 }
 
 /// An undo-merge key for one gesture on `id`: a new key each time a drag starts, so separate
@@ -481,17 +484,20 @@ fn prop_row(
             let bw = 70.0;
             let br = Rect::from_min_size(pos2(vx, cy - 9.0), vec2(bw, 18.0));
             if widgets::text_button(ui, br, crate::i18n::tr("Choose..."), false, &t, crate::id(("ec-file", uid))).clicked() {
-                let filters: Vec<&str> = match &prop.ui {
-                    ParamUi::File { filters } => filters.iter().map(String::as_str).collect(),
+                let exts = match &prop.ui {
+                    ParamUi::File { filters } => filters.clone(),
                     _ => vec![],
                 };
-                match app.hooks.pick_files.as_ref() {
-                    Some(pick) => {
-                        if let Some(path) = pick(&filters).into_iter().next() {
-                            actions.push(("prop.set".into(), json!({"layer": layer.id.0, "prop": uid, "value": path})));
-                        }
+                let layer = layer.id.0;
+                let picked = app.pick(crate::FileDialog::Open { exts, many: false }, move |app, paths| {
+                    if let Some(path) = paths.into_iter().next()
+                        && let Err(e) = app.session.execute("prop.set", json!({"layer": layer, "prop": uid, "value": path}))
+                    {
+                        app.ui.status = e.to_string();
                     }
-                    None => app.ui.status = "no file dialog available: set the path with prop.set".into(),
+                });
+                if !picked {
+                    app.ui.status = "no file dialog available: set the path with prop.set".into();
                 }
             }
             app.auto.add(&format!("effectControls.prop.{uid}.choose"), br, &prop.name);
@@ -1176,6 +1182,10 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
     let mut tops: Vec<(u64, f32)> = vec![];
     for (fi, g) in fx.iter().enumerate() {
         let GroupKind::Effect { effect } = &g.kind else { continue };
+        // Narrowed to one effect (Fossa Direct's card for it): the others are not drawn.
+        if app.effect_only.is_some_and(|only| only != g.uid) {
+            continue;
+        }
         // The header draws the effect's name in the interface language; the automation labels
         // below keep the property tree's name, which is the registry's English name (#821).
         let shown = crate::i18n::effects::group(effect, &g.name);

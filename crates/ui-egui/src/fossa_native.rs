@@ -4,18 +4,30 @@
 //! work on ([`Desk::open`]), renders and saves go back to Fossa instead of to disk dialogs
 //! ([`Desk::take_saved`]), and [`Desk::grab_png`] is the composited frame at the playhead.
 //!
+//! Fossa's chat drives the editor through the control channel in-process ([`Desk::control`],
+//! the methods of [`crate::control`]; [`Desk::commands`] lists the commands and every effect's
+//! parameters, typed), and can draw one panel alone ([`Desk::panel_ui`]), narrowed to what the
+//! chat is about ([`Desk::focus`]: one effect of one layer, a time range of the timeline).
+//!
 //! While hosted ([`crate::FOSSA_HOSTED`]) the editor sends no window commands (title, close,
 //! size, full screen), opens no windows of its own (torn-off panels and the video preview are
 //! drawn inside the host's window), never replaces the host's fonts, scale or look, and its
-//! shortcuts act only while the pointer is over the desk or the last click was inside it.
+//! shortcuts act only while the pointer is over the desk or the last click was inside it. Its
+//! dialogs, menus, popups and tooltips stay inside the desk's rect (a modal dialog's backdrop
+//! covers the desk, not the host), file dialogs open off the UI thread, and preview sound plays
+//! through the desk's own output stream.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use effectcraft_engine::Services;
-use serde_json::json;
+use effectcraft_engine::effects::EffectSpec;
+use effectcraft_engine::project::{GroupKind, ParamUi};
+use serde_json::{Value, json};
 
 use crate::EffectcraftApp;
+use crate::control::{ControlRequest, Outcome};
+use crate::dock::PanelKind;
 
 /// Files saved or rendered since the last [`Desk::take_saved`]: (file name, bytes).
 type Saved = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
@@ -74,9 +86,56 @@ impl Look {
     }
 }
 
+/// A file dialog of the desk (File > Open, Import, Settings paths...), shown off the UI thread:
+/// `done` gets the picked paths (empty: cancelled) when it closes. Saves name a file in the
+/// desk's folder at once; what is written there goes to Fossa ([`Desk::take_saved`]).
+fn file_dialog(dir: &Path, dialog: crate::FileDialog, done: crate::DialogDone, ctx: &egui::Context) {
+    use rfd::AsyncFileDialog;
+    type Answer = std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send>>;
+    fn paths(files: Option<Vec<rfd::FileHandle>>) -> Vec<String> {
+        files.unwrap_or_default().into_iter().map(|f| f.path().to_string_lossy().to_string()).collect()
+    }
+    let filtered = |name: &str, exts: &[String]| if exts.is_empty() { AsyncFileDialog::new() } else { AsyncFileDialog::new().add_filter(name, exts) };
+    // (The dialog is made here, on the UI thread, as macOS needs; it is awaited on a worker.)
+    let answer: Answer = match dialog {
+        crate::FileDialog::Open { exts, many } => {
+            let d = filtered("Media", &exts);
+            if many {
+                let f = d.pick_files();
+                Box::pin(async move { paths(f.await) })
+            } else {
+                let f = d.pick_file();
+                Box::pin(async move { paths(f.await.map(|f| vec![f])) })
+            }
+        }
+        crate::FileDialog::OpenProject => {
+            let f = AsyncFileDialog::new().add_filter("EffectCraft Project", &["ecproj", "ecprojx"]).pick_file();
+            Box::pin(async move { paths(f.await.map(|f| vec![f])) })
+        }
+        crate::FileDialog::Folder => {
+            let f = AsyncFileDialog::new().pick_folder();
+            Box::pin(async move { paths(f.await.map(|f| vec![f])) })
+        }
+        crate::FileDialog::Save { default, .. } => {
+            let file = Path::new(&default).file_name().map(|n| n.to_string_lossy().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| "Untitled".into());
+            done(vec![dir.join(file).to_string_lossy().to_string()]);
+            return;
+        }
+    };
+    let ctx = ctx.clone();
+    let spawned = std::thread::Builder::new().name("ec-desk-dialog".into()).spawn(move || {
+        done(pollster::block_on(answer));
+        ctx.request_repaint();
+    });
+    if let Err(e) = spawned {
+        log::error!("file dialog: {e}");
+    }
+}
+
 /// EffectCraft embedded in a host's egui window (Fossa Direct's Effects desk).
 pub struct Desk {
     app: EffectcraftApp,
+    ctx: egui::Context,
     saved: Saved,
     /// Where files Fossa opens are written, and where saves without a path go.
     dir: PathBuf,
@@ -84,6 +143,10 @@ pub struct Desk {
     look: Option<Look>,
     /// The last click landed in the desk: keyboard shortcuts go to it.
     focused: bool,
+    /// [`Desk::focus`]: the one effect Effect Controls shows in [`Desk::panel_ui`] (group uid).
+    focus_effect: Option<u64>,
+    /// [`Desk::focus`]: the time range (seconds) the Timeline is to show, once its width is known.
+    focus_range: Option<(f64, f64)>,
 }
 
 impl Desk {
@@ -120,13 +183,22 @@ impl Desk {
         app.init_gpu_on(render_state);
         // Save dialogs name a file in the desk's folder; the file goes to Fossa when written.
         let into = dir.clone();
-        app.hooks.pick_save = Some(Box::new(move |name: &str| Some(into.join(if name.is_empty() { "Untitled Project.ecproj" } else { name }).to_string_lossy().to_string())));
+        app.hooks.pick_save =
+            Some(Box::new(move |name: &str| Some(into.join(if name.is_empty() { "Untitled Project.ecproj" } else { name }).to_string_lossy().to_string())));
         let into = dir.clone();
         app.hooks.pick_save_file = Some(Box::new(move |name: &str, _ext: &str| {
             let file = Path::new(name).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Untitled".into());
             Some(into.join(file).to_string_lossy().to_string())
         }));
-        Desk { app, saved, dir, look: None, focused: false }
+        // Every other file dialog (File > Open, Import, folders, Effect Controls' Choose..., the
+        // forms' Browse...) opens without blocking the host's frame.
+        let (into, host) = (dir.clone(), ctx.clone());
+        app.hooks.file_dialog_async = Some(Box::new(move |dialog, done| file_dialog(&into, dialog, done, &host)));
+        // Preview sound: the desk opens its own output while it plays (one stream; it closes
+        // when playback stops or the desk is dropped).
+        app.hooks.audio_device = Some(Box::new(crate::audio_out::open));
+        app.hooks.audio_devices = Some(Box::new(crate::audio_out::devices));
+        Desk { app, ctx: ctx.clone(), saved, dir, look: None, focused: false, focus_effect: None, focus_range: None }
     }
 
     /// The editor (for hosts and tests that drive it further).
@@ -179,8 +251,207 @@ impl Desk {
         crate::control::encode_png(&rgba, w, h)
     }
 
+    /// The selected layers alone at the playhead (with their effects, masks and transforms, on
+    /// transparency), as a PNG; an error when no layer is selected.
+    pub fn grab_selection_png(&mut self) -> Result<Vec<u8>, String> {
+        let layers: Vec<u64> = self.app.session.state.selected_layers.iter().map(|l| l.0).collect();
+        if layers.is_empty() {
+            return Err("no layer is selected".into());
+        }
+        self.grab_layers(&layers)
+    }
+
+    /// Layer `layer` (id) of the active composition alone at the playhead, as a PNG.
+    pub fn grab_layer_png(&mut self, layer: u64) -> Result<Vec<u8>, String> {
+        self.grab_layers(&[layer])
+    }
+
+    /// `layers` of the active comp soloed (in a copy of the project), at the comp's size.
+    fn grab_layers(&self, layers: &[u64]) -> Result<Vec<u8>, String> {
+        let s = &self.app.session;
+        let cid = s.resolve_comp(None).map_err(|e| e.to_string())?;
+        let mut project = (*s.project).clone();
+        let comp = project.comp_mut(cid).ok_or("no composition is open")?;
+        if let Some(missing) = layers.iter().find(|id| !comp.layers.iter().any(|l| l.id.0 == **id)) {
+            return Err(format!("no layer {missing} in the composition"));
+        }
+        for l in &mut comp.layers {
+            l.switches.solo = layers.contains(&l.id.0);
+            if l.switches.solo {
+                l.switches.video = true;
+            }
+        }
+        let opts = effectcraft_engine::render::RenderOpts { backend: effectcraft_engine::render::Backend::Auto, ..Default::default() };
+        let mut r = effectcraft_engine::render::Renderer::new(&project, s.footage.as_ref(), opts);
+        r.expr = s.expr.as_deref();
+        r.accel = s.accel.as_deref();
+        let img = r.comp_frame(cid, s.time());
+        crate::control::encode_png(&img.to_rgba8(), img.width, img.height)
+    }
+
+    /// The pictures asked for with Add to Shot in a layer's context menu since the last call:
+    /// (file name, PNG) per layer.
+    pub fn take_shot_requests(&mut self) -> Vec<(String, Vec<u8>)> {
+        let ids = std::mem::take(&mut self.app.shot_requests);
+        let mut out = Vec::new();
+        for id in ids {
+            let name = self
+                .app
+                .session
+                .active_comp()
+                .and_then(|c| c.layers.iter().find(|l| l.id.0 == id))
+                .map(|l| l.name.clone())
+                .unwrap_or_else(|| format!("Layer {id}"));
+            let name: String = name.chars().map(|c| if c.is_alphanumeric() || " -_.".contains(c) { c } else { '_' }).collect();
+            match self.grab_layer_png(id) {
+                Ok(png) => out.push((format!("{}.png", name.trim()), png)),
+                Err(e) => self.app.ui.status = e,
+            }
+        }
+        out
+    }
+
+    /// Run one control-channel request in-process (the methods [`crate::control`] lists:
+    /// `engine.execute`, `engine.commands`, `ui.set`, `ui.panel.show`, `ui.inspect`,
+    /// `render.frame`...), between frames. Synthetic input (`ui.click`, `ui.key`...) and window
+    /// screenshots need the windowed app's channel: here they are errors (use [`Desk::panel_ui`],
+    /// [`Desk::grab_png`]).
+    pub fn control(&mut self, method: &str, params: Value) -> Result<Value, String> {
+        let (req, _reply) = ControlRequest::new(method, params);
+        let reply = match crate::control::handle(&mut self.app, &self.ctx, &req) {
+            Outcome::Done(v) => v,
+            Outcome::AwaitJobs(w) => w.finish(&mut self.app),
+            Outcome::Retry(e) => return Err(e),
+            Outcome::AfterInput => {
+                drop(self.app.take_synthetic_input());
+                return Err(format!("`{method}` is synthetic input, which the desk does not take in-process; run the command with engine.execute"));
+            }
+            Outcome::Screenshot { .. } => return Err("the desk takes no window screenshots: use grab_png, or panel_ui to draw a panel".into()),
+        };
+        if reply["ok"].as_bool() == Some(true) { Ok(reply["result"].clone()) } else { Err(reply["error"].as_str().unwrap_or("failed").to_string()) }
+    }
+
+    /// The `engine.commands` listing for agents: every command with its parameters, typed where
+    /// the code says what they take (`kind`, and `choices`, `items` for arrays), `kind: "any"`
+    /// where its doc leaves a parameter free; and every effect with its parameters typed from
+    /// the effect registry (kind, default, min/max, slider range, choices, file types), with
+    /// the `prop.set` path of each. `typed` / `untyped` count the commands.
+    pub fn commands(&self) -> Value {
+        let session = &self.app.session;
+        let (mut typed, mut untyped) = (0, 0);
+        let commands: Vec<Value> = effectcraft_engine::command_specs()
+            .iter()
+            .map(|c| {
+                let schema = effectcraft_engine::commands::params_schema(c);
+                let required: Vec<&str> = schema["required"].as_array().map(|r| r.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                let params: Vec<Value> = schema["properties"]
+                    .as_object()
+                    .map(|m| {
+                        m.iter()
+                            .map(|(k, v)| {
+                                let mut p = param_type(c.id, k, v["description"].as_str().unwrap_or(""));
+                                p["id"] = json!(k);
+                                p["optional"] = json!(!required.contains(&k.as_str()));
+                                p
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if params.iter().all(|p| p["kind"] != "any") {
+                    typed += 1;
+                } else {
+                    untyped += 1;
+                }
+                let enabled = (c.enabled)(session);
+                json!({"id": c.id, "label": c.label, "menu": c.menu, "shortcut": c.shortcut, "doc": c.params, "params": params, "enabled": enabled.is_ok(), "why": enabled.err()})
+            })
+            .collect();
+        let effects: Vec<Value> = effectcraft_engine::effects::all().into_iter().map(effect_json).collect();
+        json!({"commands": commands, "typed": typed, "untyped": untyped, "effects": effects})
+    }
+
+    /// The panels [`Desk::panel_ui`] draws (ids `ui.panel.show` takes too).
+    pub fn panels(&self) -> Vec<String> {
+        PanelKind::ALL.iter().map(|p| p.id()).collect()
+    }
+
+    /// Narrow what [`Desk::panel_ui`] shows to `target` (any of): `{comp, layer | layers,
+    /// effect, time, range: [start, end]}`. `comp` opens that composition; `layer(s)` selects
+    /// them (id, name or `#n`); `effect` (a uid, 1-based index, or effect name or id on the
+    /// first of them) makes Effect Controls show only that effect and selects it (null shows
+    /// them all again); `time` (seconds) moves the playhead; `range` scrolls and zooms the
+    /// Timeline to those seconds. `{}` clears the narrowing.
+    pub fn focus(&mut self, target: Value) -> Result<(), String> {
+        let s = &mut self.app.session;
+        if target.as_object().is_some_and(|o| o.is_empty()) {
+            self.focus_effect = None;
+            self.focus_range = None;
+            return Ok(());
+        }
+        if let Some(c) = target.get("comp").filter(|c| !c.is_null()) {
+            s.execute("comp.open", json!({"comp": c})).map_err(|e| e.to_string())?;
+        }
+        let layers = match (target.get("layers"), target.get("layer")) {
+            (Some(Value::Array(a)), _) => Some(a.clone()),
+            (_, Some(l)) if !l.is_null() => Some(vec![l.clone()]),
+            _ => None,
+        };
+        if let Some(layers) = layers {
+            s.execute("layer.select", json!({"layers": layers})).map_err(|e| e.to_string())?;
+        }
+        if let Some(t) = target.get("time").and_then(Value::as_f64) {
+            s.execute("time.set", json!({"time": t})).map_err(|e| e.to_string())?;
+        }
+        if let Some(e) = target.get("effect") {
+            self.focus_effect = None;
+            if !e.is_null() {
+                let layer = s.state.selected_layers.first().copied().ok_or("select a layer for the effect (`layer`)")?;
+                let comp = s.active_comp().ok_or("no composition is open")?;
+                let l = comp.layers.iter().find(|l| l.id == layer).ok_or("no such layer")?;
+                let fx: Vec<(u64, String, String)> = l
+                    .effects()
+                    .map(|g| {
+                        g.groups()
+                            .filter_map(|g| if let GroupKind::Effect { effect } = &g.kind { Some((g.uid, g.name.clone(), effect.clone())) } else { None })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let found = match e {
+                    Value::Number(n) => n.as_u64().and_then(|n| fx.iter().find(|f| f.0 == n).or_else(|| fx.get((n as usize).wrapping_sub(1)))),
+                    Value::String(name) => fx.iter().find(|f| f.1.eq_ignore_ascii_case(name) || f.2 == *name),
+                    _ => None,
+                };
+                let uid = found.map(|f| f.0).ok_or_else(|| format!("no effect {e} on layer {}", l.name))?;
+                s.execute("prop.select", json!({"layer": layer.0, "prop": uid})).map_err(|e| e.to_string())?;
+                self.focus_effect = Some(uid);
+            }
+        }
+        if let Some(Value::Array(r)) = target.get("range")
+            && let (Some(a), Some(b)) = (r.first().and_then(Value::as_f64), r.get(1).and_then(Value::as_f64))
+            && b > a
+        {
+            self.focus_range = Some((a, b));
+        }
+        Ok(())
+    }
+
     /// Draw and run the editor inside `ui`'s rect of the host window, one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.run(ui, frame, None);
+    }
+
+    /// Draw and run only `panel` (one of [`Desk::panels`]) inside `ui`'s rect, one frame, as
+    /// [`Desk::focus`] narrowed it: Fossa Direct's card for what the chat is about. Its
+    /// dialogs and menus stay in that rect.
+    pub fn panel_ui(&mut self, panel: &str, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let Some(p) = PanelKind::from_name(panel) else {
+            ui.label(format!("No panel `{panel}`"));
+            return;
+        };
+        self.run(ui, frame, Some(p));
+    }
+
+    fn run(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame, panel: Option<PanelKind>) {
         let ctx = ui.ctx().clone();
         let rect = ui.max_rect();
         ctx.data_mut(|d| d.insert_temp(crate::fossa_native_bounds(), rect));
@@ -204,18 +475,38 @@ impl Desk {
         } else {
             ctx.input_mut(|i| {
                 let (held, rest) = std::mem::take(&mut i.events).into_iter().partition(|e| {
-                    matches!(e, egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_) | egui::Event::Ime(_))
+                    matches!(
+                        e,
+                        egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::Copy | egui::Event::Cut | egui::Event::Paste(_) | egui::Event::Ime(_)
+                    )
                 });
                 i.events = rest;
                 held
             })
         };
+        // The Timeline range `focus` asked for, now that the Timeline has a width.
+        if let Some((a, b)) = self.focus_range
+            && let Some((_, w)) = ctx.data(|d| d.get_temp::<(f32, f32)>(crate::id("timeline-graph-area")))
+        {
+            self.app.ui.timeline.start = a;
+            self.app.ui.timeline.pps = Some(((w - 6.0).max(10.0) as f64) / (b - a));
+            self.focus_range = None;
+        }
+        let painted = painted_layers(&ctx, ui.layer_id());
         eframe::App::logic(&mut self.app, &ctx, frame);
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect).id_salt("effectcraft"), |ui| {
             ui.set_style(ctx.global_style());
             ui.set_clip_rect(rect.intersect(ui.clip_rect()));
-            eframe::App::ui(&mut self.app, ui, frame);
+            match panel {
+                Some(p) => {
+                    self.app.effect_only = self.focus_effect;
+                    self.app.panel_ui(ui, frame, p);
+                    self.app.effect_only = None;
+                }
+                None => eframe::App::ui(&mut self.app, ui, frame),
+            }
         });
+        keep_inside(&ctx, rect, &painted, ui.layer_id());
         self.look = Some(Look::read(&ctx));
         host.apply(&ctx);
         ctx.set_embed_viewports(embed);
@@ -232,6 +523,147 @@ impl Drop for Desk {
     }
 }
 
+/// How many shapes each layer above the background holds so far this frame (what the host
+/// painted before the desk).
+fn painted_layers(ctx: &egui::Context, own: egui::LayerId) -> Vec<(egui::LayerId, usize)> {
+    let layers = ctx.memory(|m| m.areas().visible_layer_ids());
+    ctx.graphics(|g| {
+        layers.into_iter().filter(|l| l.order != egui::Order::Background && *l != own).map(|l| (l, g.get(l).map_or(0, |p| p.next_idx().0))).collect()
+    })
+}
+
+/// Move the desk's popups, menus, tooltips and windows into `rect`: each layer the desk painted
+/// this frame (more shapes than `before`, the host's) is shifted by what sticks out of it, as
+/// drawn and as clicked (egui's layer transforms).
+fn keep_inside(ctx: &egui::Context, rect: egui::Rect, before: &[(egui::LayerId, usize)], own: egui::LayerId) {
+    let layers = ctx.memory(|m| m.areas().visible_layer_ids());
+    for l in layers {
+        if l.order == egui::Order::Background || l == own {
+            continue;
+        }
+        let had = before.iter().find(|(b, _)| *b == l).map_or(0, |b| b.1);
+        if ctx.graphics(|g| g.get(l).map_or(0, |p| p.next_idx().0)) <= had {
+            continue;
+        }
+        let Some(area) = egui::AreaState::load(ctx, l.id) else { continue };
+        let shift = shift_into(area.rect(), rect);
+        ctx.set_transform_layer(l, egui::emath::TSTransform::from_translation(shift));
+    }
+}
+
+/// How far to move `r` so it lies within `bounds` (its top left corner when it is larger).
+fn shift_into(r: egui::Rect, bounds: egui::Rect) -> egui::Vec2 {
+    let axis = |min: f32, max: f32, lo: f32, hi: f32| {
+        if min < lo || max - min > hi - lo {
+            lo - min
+        } else if max > hi {
+            hi - max
+        } else {
+            0.0
+        }
+    };
+    egui::vec2(axis(r.min.x, r.max.x, bounds.min.x, bounds.max.x), axis(r.min.y, r.max.y, bounds.min.y, bounds.max.y))
+}
+
+/// A command parameter's type, from the conventions of the commands' params docs and the code
+/// that reads them: `{kind}` plus `choices` (`a|b|c` in the doc, or the effect registry for
+/// `effect.apply`) or `items` (arrays). `kind: "any"` when the doc leaves it free.
+fn param_type(command: &str, key: &str, doc: &str) -> Value {
+    // The part of the doc after `key:` (or `key?:`).
+    let after = doc
+        .split_once(':')
+        .map(|(k, v)| (k.trim().trim_end_matches('?'), v.trim()))
+        .filter(|(k, _)| k.split('|').any(|k| k.trim().trim_end_matches('?') == key))
+        .map(|(_, v)| v);
+    if command == "effect.apply" && key == "effect" {
+        let ids: Vec<&str> = effectcraft_engine::effects::all().into_iter().map(|e| e.id).collect();
+        return json!({"kind": "effect", "choices": ids});
+    }
+    // `key: a|b|c`: one of those words.
+    if let Some(v) = after {
+        let words: Vec<&str> = v.split(['(', ';']).next().unwrap_or("").split('|').map(str::trim).collect();
+        // (`id|name|index` names the ways to refer to something, not choices.)
+        let refs = ["id", "name", "uid", "index", "path", "prop", "#n", "number", "string", "seconds"];
+        if words.len() > 1 && words.iter().all(|w| !w.is_empty() && !refs.contains(w) && w.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))) {
+            return json!({"kind": "choice", "choices": words});
+        }
+    }
+    let seconds = doc.contains("(s)") || doc.contains("seconds") || doc.contains("comp s");
+    let kind = match key {
+        "layer" | "parent" | "matte" => "layer",
+        "layers" => return json!({"kind": "array", "items": "layer"}),
+        "comp" => "comp",
+        "item" | "folder" if !command.starts_with("file.") => "item",
+        "items" => return json!({"kind": "array", "items": "item"}),
+        "effect" | "mask" | "tracker" | "animator" | "prop" | "group" => "property",
+        "props" | "properties" | "masks" | "effects" => return json!({"kind": "array", "items": "property"}),
+        "paths" | "files" => return json!({"kind": "array", "items": "file"}),
+        "path" if command.starts_with("prop.") || command.starts_with("key") || doc.contains("prop") => "property",
+        "path" | "file" | "folder" | "out" if !seconds => "file",
+        "time" | "in" | "out" | "at" | "start" | "end" | "duration" | "seconds" | "offset" => "number",
+        "frame" | "index" | "count" | "width" | "height" | "fps" | "frameRate" | "x" | "y" | "z" | "scale" | "opacity" | "amount" | "size" | "step" | "pps" => {
+            "number"
+        }
+        "name" | "text" | "title" | "comment" | "query" | "filter" | "timecode" | "preset" | "newName" | "label" | "url" | "script" | "expression"
+        | "command" | "font" => "string",
+        "color" | "fill" | "stroke" => "color",
+        "wait" | "add" | "toggle" | "on" | "enabled" | "force" | "background" | "edit" | "all" | "enabledOnly" | "schemas" | "selected" | "keys"
+        | "selectKeys" | "relative" | "loop" | "merge" | "solo" | "visible" | "locked" | "shy" => "bool",
+        _ if seconds => "number",
+        _ => "any",
+    };
+    json!({"kind": kind})
+}
+
+/// An effect of the registry with its parameters typed: what an agent needs to apply it
+/// (`effect.apply {effect: id}`) and set each parameter (`prop.set {layer, path, value}`, the
+/// path with `{effect}` replaced by the uid `effect.apply` returned, or `#n` for the n-th).
+fn effect_json(e: &EffectSpec) -> Value {
+    let params: Vec<Value> = e
+        .params
+        .iter()
+        .filter(|p| !matches!(p.ui, ParamUi::Hidden))
+        .map(|p| {
+            let mut o = json!({"id": p.id, "name": p.name, "default": p.default.to_json(), "path": format!("effects/@{{effect}}/{}", p.id)});
+            let kind = match &p.ui {
+                ParamUi::Number => "number",
+                ParamUi::Slider { min, max, slider_min, slider_max, decimals } => {
+                    o["min"] = json!(min);
+                    o["max"] = json!(max);
+                    o["sliderMin"] = json!(slider_min);
+                    o["sliderMax"] = json!(slider_max);
+                    o["decimals"] = json!(decimals);
+                    "number"
+                }
+                ParamUi::Percent => "percent",
+                ParamUi::Angle => "angle",
+                ParamUi::Pixels => "pixels",
+                ParamUi::Point => "point",
+                ParamUi::Point3 => "point3",
+                ParamUi::Color => "color",
+                ParamUi::Checkbox => "bool",
+                ParamUi::Popup { options } => {
+                    o["choices"] = json!(options);
+                    "choice"
+                }
+                ParamUi::Layer => "layer",
+                ParamUi::Mask => "mask",
+                ParamUi::Path => "path",
+                ParamUi::Text => "text",
+                ParamUi::File { filters } => {
+                    o["fileTypes"] = json!(filters);
+                    "file"
+                }
+                ParamUi::Gradient => "gradient",
+                ParamUi::Hidden => "hidden",
+            };
+            o["kind"] = json!(kind);
+            o
+        })
+        .collect();
+    json!({"id": e.id, "name": e.name, "category": e.category, "params": params})
+}
+
 /// `file` in `folder`, numbered when a file of that name is already there.
 fn unique(folder: &Path, file: &str) -> PathBuf {
     let first = folder.join(file);
@@ -243,4 +675,28 @@ fn unique(folder: &Path, file: &str) -> PathBuf {
         _ => (file, String::new()),
     };
     (2..).map(|n| folder.join(format!("{stem} {n}{ext}"))).find(|p| !p.exists()).unwrap_or(first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_popup_is_moved_into_the_desk() {
+        let desk = egui::Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(1000.0, 370.0));
+        let menu = egui::Rect::from_min_size(egui::pos2(900.0, 300.0), egui::vec2(200.0, 150.0));
+        assert_eq!(shift_into(menu, desk), egui::vec2(-100.0, -80.0));
+        assert_eq!(shift_into(egui::Rect::from_min_size(egui::pos2(200.0, 60.0), egui::vec2(10.0, 10.0)), desk), egui::Vec2::ZERO);
+        // Larger than the desk: its top left corner goes to the desk's.
+        assert_eq!(shift_into(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(2000.0, 10.0)), desk), egui::vec2(100.0, 50.0));
+    }
+
+    #[test]
+    fn parameters_are_typed_from_their_docs() {
+        assert_eq!(param_type("x", "kind", "kind: range|wiggly|expression")["choices"], json!(["range", "wiggly", "expression"]));
+        assert_eq!(param_type("layer.select", "layers", "layers: [id|name|#n]")["kind"], "array");
+        assert_eq!(param_type("time.set", "time", "time? (s) | frame? | timecode?")["kind"], "number");
+        assert_eq!(param_type("x", "value", "value?")["kind"], "any");
+        assert_eq!(param_type("effect.apply", "effect", "effect: id|name (e.g. Gaussian Blur)")["kind"], "effect");
+    }
 }

@@ -25,6 +25,16 @@ pub fn open(app: &mut EffectcraftApp, page: &str) {
     app.dialog = Some(Dialog::Settings);
 }
 
+/// Settings path `k` from a file dialog (the answer may come on a later frame).
+fn pick_pref(app: &mut EffectcraftApp, dialog: crate::FileDialog, k: String) {
+    app.pick(dialog, move |app, paths| {
+        if let Some(f) = paths.into_iter().next() {
+            let _ = app.session.prefs.set(&k, json!(f));
+            app.session.prefs_changed();
+        }
+    });
+}
+
 enum Act {
     Set(String, Value),
     Run(String, Value),
@@ -723,29 +733,22 @@ pub fn show(app: &mut EffectcraftApp, ctx: &egui::Context, t: &Tokens) {
                     app.dialog = Some(Dialog::Settings);
                 }
             }
-            Act::PickFolder(k) => {
-                if let Some(f) = app.hooks.pick_folder.as_ref().and_then(|f| f()) {
-                    let _ = app.session.prefs.set(&k, json!(f));
-                    app.session.prefs_changed();
-                }
-            }
-            Act::PickProject(k) => {
-                if let Some(f) = app.hooks.pick_open_project.as_ref().and_then(|f| f()) {
-                    let _ = app.session.prefs.set(&k, json!(f));
-                    app.session.prefs_changed();
-                }
-            }
+            Act::PickFolder(k) => pick_pref(app, crate::FileDialog::Folder, k),
+            Act::PickProject(k) => pick_pref(app, crate::FileDialog::OpenProject, k),
             Act::PickModel(task) => {
                 // The registry's file types for the task (`.pt`, `.task`).
-                let mut exts: Vec<&str> = effectcraft_engine::segment::models(task).filter_map(|m| m.file_name.rsplit_once('.').map(|x| x.1)).collect();
+                let mut exts: Vec<String> =
+                    effectcraft_engine::segment::models(task).filter_map(|m| m.file_name.rsplit_once('.').map(|x| x.1.to_string())).collect();
                 exts.dedup();
-                let picked = app.hooks.pick_files.as_ref().map(|f| f(&exts)).unwrap_or_default();
                 let cmd = if task == Task::Face { "face.model.install" } else { "roto.model.install" };
-                if let Some(path) = picked.into_iter().next()
-                    && let Err(e) = crate::menus::invoke(app, ctx, cmd, json!({"path": path}))
-                {
-                    app.ui.status = e;
-                }
+                let ctx = ctx.clone();
+                app.pick(crate::FileDialog::Open { exts, many: false }, move |app, paths| {
+                    if let Some(path) = paths.into_iter().next()
+                        && let Err(e) = crate::menus::invoke(app, &ctx, cmd, json!({"path": path}))
+                    {
+                        app.ui.status = e;
+                    }
+                });
             }
         }
     }

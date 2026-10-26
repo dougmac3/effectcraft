@@ -12,9 +12,9 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use crate::audio::{AudioDevice, AudioFeed, AudioOutput};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SizedSample};
-use effectcraft_ui_egui::audio::{AudioDevice, AudioFeed, AudioOutput};
 
 /// Device callback period: about 10 ms, clamped so Pulse/PipeWire/ALSA does not open a
 /// multi-hundred-millisecond default buffer that plays as silence at the start of preview (#554).

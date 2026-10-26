@@ -23,7 +23,6 @@ serde_json = { workspace = true }
 winit = { version = "0.30", default-features = false }
 rfd = { workspace = true }
 pollster = { workspace = true }
-cpal = { workspace = true }
 log = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

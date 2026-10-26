@@ -244,7 +244,7 @@ fn controls(app: &mut EffectcraftApp, ui: &mut egui::Ui, cid: ItemId, list: &[Eg
                     name_label(app, ui, cid, c, RichText::new(&c.name), actions);
                     let item = essential::source_media(&app.session.project, cid, c);
                     let name = item.and_then(|i| app.session.project.item(i)).map(|i| i.name.clone()).unwrap_or_default();
-                    ui.label(RichText::new(tr_args("▣ {}", &[&name])).color(t.text_dim));
+                    ui.label(RichText::new(tr_args("\u{25a0} {}", &[&name])).color(t.text_dim));
                 }
             }
             let r = ui.add(egui::Button::new(RichText::new("×").size(10.0)).small().frame(false)).on_hover_text(tr("Remove"));

@@ -195,30 +195,46 @@ pub(crate) fn modal_fit(ctx: &egui::Context, title: &str, size: egui::Vec2, t: &
     let offset_id = id.with("offset");
     let room = ((crate::screen(ctx).size() - size) * 0.5).max(vec2(0.0, 0.0));
     let offset = ctx.data(|d| d.get_temp::<egui::Vec2>(offset_id)).unwrap_or_default().clamp(-room, room);
-    egui::Modal::new(id)
-        .area(if crate::fossa_hosted() {
-            // Over the desk, not the middle of its host's window.
-            egui::Modal::default_area(id).pivot(Align2::CENTER_CENTER).fixed_pos(crate::screen(ctx).center() + offset)
-        } else {
-            egui::Modal::default_area(id).anchor(Align2::CENTER_CENTER, offset)
-        })
-        .backdrop_color(Color32::from_black_alpha(120))
-        .frame(egui::Frame::window(&ctx.style_of(ctx.theme())).fill(t.panel_bg).inner_margin(egui::Margin::same(18)))
-        .show(ctx, |ui| {
-            ui.set_width(size.x - 36.0);
-            ui.set_min_height(size.y - 36.0);
-            // The id stays keyed on the untranslated source, so switching language cannot move it.
-            let head = ui.label(egui::RichText::new(tr(title)).font(Tokens::semibold(15.0)).color(t.tab_text_active));
-            let row = Rect::from_x_y_ranges(ui.max_rect().x_range(), head.rect.y_range());
-            let grip = ui.interact(row, id.with("grip"), Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
-            if grip.dragged() {
-                let moved = (offset + grip.drag_delta()).clamp(-room, room);
-                ui.ctx().data_mut(|d| d.insert_temp(offset_id, moved));
-            }
-            ui.add_space(10.0);
-            let title_h = ui.cursor().top() - ui.min_rect().top();
-            body(ui, (size.y - 36.0 - title_h).max(40.0));
-        });
+    let frame = egui::Frame::window(&ctx.style_of(ctx.theme())).fill(t.panel_bg).inner_margin(egui::Margin::same(18));
+    let content = |ui: &mut egui::Ui| {
+        ui.set_width(size.x - 36.0);
+        ui.set_min_height(size.y - 36.0);
+        // The id stays keyed on the untranslated source, so switching language cannot move it.
+        let head = ui.label(egui::RichText::new(tr(title)).font(Tokens::semibold(15.0)).color(t.tab_text_active));
+        let row = Rect::from_x_y_ranges(ui.max_rect().x_range(), head.rect.y_range());
+        let grip = ui.interact(row, id.with("grip"), Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
+        if grip.dragged() {
+            let moved = (offset + grip.drag_delta()).clamp(-room, room);
+            ui.ctx().data_mut(|d| d.insert_temp(offset_id, moved));
+        }
+        ui.add_space(10.0);
+        let title_h = ui.cursor().top() - ui.min_rect().top();
+        body(ui, (size.y - 36.0 - title_h).max(40.0));
+    };
+    if !crate::fossa_hosted() {
+        egui::Modal::new(id)
+            .area(egui::Modal::default_area(id).anchor(Align2::CENTER_CENTER, offset))
+            .backdrop_color(Color32::from_black_alpha(120))
+            .frame(frame)
+            .show(ctx, content);
+        return;
+    }
+    // Inside Fossa Direct the dialog is modal to the desk only: its backdrop covers the desk's
+    // rect (taking the clicks there) and the host's window around it stays usable.
+    let desk = crate::screen(ctx);
+    let backdrop = egui::Area::new(id.with("backdrop")).order(egui::Order::Foreground).fixed_pos(desk.min).constrain(false).show(ctx, |ui| {
+        let (r, _) = ui.allocate_exact_size(desk.size(), Sense::click_and_drag());
+        ui.painter().rect_filled(r, 0.0, Color32::from_black_alpha(120));
+    });
+    let dialog = egui::Area::new(id)
+        .kind(egui::UiKind::Modal)
+        .order(egui::Order::Foreground)
+        .pivot(Align2::CENTER_CENTER)
+        .fixed_pos(desk.center() + offset)
+        .constrain_to(desk)
+        .show(ctx, |ui| frame.show(ui, content));
+    // The dialog stays directly above its backdrop, also when the backdrop is clicked.
+    ctx.set_sublayer(backdrop.response.layer_id, dialog.response.layer_id);
 }
 
 /// The buttons of a [`modal_fit`] body of `height`, kept in view: `footer` lays them out first,

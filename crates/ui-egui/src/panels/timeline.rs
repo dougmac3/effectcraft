@@ -3951,6 +3951,9 @@ pub(crate) fn layer_menu(
         item(ui, "Adjustment Layer", "layer.newAdjustment", json!({}));
     });
     item(ui, "Layer Settings…", "layer.settings", json!({}));
+    if crate::fossa_hosted() {
+        item(ui, "Add to Shot", "fossa.addToShot", json!({"layers": layers}));
+    }
     if caps.vector {
         item(ui, "Create Shapes from Vector Layer", "layer.create", json!({"op": "shapesFromVector", "layers": layers}));
     }
