@@ -48,7 +48,7 @@ pub struct CpalOut {
 pub fn devices() -> Vec<String> {
     let host = cpal::default_host();
     #[allow(deprecated)]
-    host.output_devices().map(|d| d.filter_map(|d| d.name().ok()).collect()).unwrap_or_default()
+    host.output_devices().map(|d| d.filter_map(|d| d.description().ok().map(|x| x.name().to_string())).collect()).unwrap_or_default()
 }
 
 /// The named output device, or the default one.
@@ -56,7 +56,7 @@ fn device(name: &str) -> Option<cpal::Device> {
     let host = cpal::default_host();
     if !name.is_empty() {
         #[allow(deprecated)]
-        let found = host.output_devices().ok().and_then(|mut d| d.find(|d| d.name().ok().as_deref() == Some(name)));
+        let found = host.output_devices().ok().and_then(|mut d| d.find(|d| d.description().ok().map(|x| x.name().to_string()).as_deref() == Some(name)));
         if found.is_some() {
             return found;
         }
@@ -72,10 +72,10 @@ pub fn open(out: &AudioOutput) -> Option<Box<dyn AudioDevice>> {
     // (otherwise the preview is mixed at that rate and resampled to the device's).
     let supports = |r: u32| {
         dev.supported_output_configs()
-            .map(|mut c| c.any(|c| c.channels() == cfg.channels() && c.min_sample_rate().0 <= r && r <= c.max_sample_rate().0))
+            .map(|mut c| c.any(|c| c.channels() == cfg.channels() && c.min_sample_rate() <= r && r <= c.max_sample_rate()))
             .unwrap_or(false)
     };
-    let rate = if out.rate > 0 && supports(out.rate) { out.rate } else { cfg.sample_rate().0 };
+    let rate = if out.rate > 0 && supports(out.rate) { out.rate } else { cfg.sample_rate() };
     Some(Box::new(CpalOut { out: out.clone(), rate, latency: Arc::new(AtomicU64::new(0)), stop: None, thread: None }))
 }
 
@@ -89,10 +89,10 @@ fn run<T: SizedSample + FromSample<f32>>(
     let ch = cfg.channels as usize;
     // Output mapping: device channels (0-based) for left and right; out of range → 1 and 2.
     let (left, right) = if map.0 < ch && map.1 < ch { map } else { (0, 1) };
-    let rate = cfg.sample_rate.0 as f64;
+    let rate = cfg.sample_rate as f64;
     let mut stereo: Vec<f32> = Vec::new();
     dev.build_output_stream(
-        cfg,
+        cfg.clone(),
         move |out: &mut [T], info: &cpal::OutputCallbackInfo| {
             let frames = out.len() / ch.max(1);
             stereo.resize(frames * 2, 0.0);
@@ -114,7 +114,7 @@ fn run<T: SizedSample + FromSample<f32>>(
             }
             // Frames between "handed over" and "audible": device latency plus this buffer.
             let ts = info.timestamp();
-            let dev_lat = ts.playback.duration_since(&ts.callback).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+            let dev_lat = ts.playback.duration_since(ts.callback).as_secs_f64();
             latency.store((dev_lat * rate) as u64 + frames as u64, Ordering::Relaxed);
         },
         |e| log::warn!("audio output: {e}"),
@@ -151,7 +151,7 @@ impl AudioDevice for CpalOut {
                     }
                 };
                 let mut cfg: cpal::StreamConfig = sup.config();
-                cfg.sample_rate = cpal::SampleRate(rate);
+                cfg.sample_rate = rate;
                 // A short period only where the default one is long (ALSA/PulseAudio on Linux, #554),
                 // and only within what the device reports it takes.
                 if cfg!(target_os = "linux") {
