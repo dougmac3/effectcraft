@@ -37,6 +37,21 @@ use crate::dock::PanelKind;
 // ponytail: one fixed limit; scale it with the clip's length if long clips hit it.
 pub const CLIP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
+/// A render [`Desk::start_render`] runs on its own thread.
+#[derive(Default)]
+struct ClipJob {
+    file: String,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// (frames done, frames in all).
+    progress: Arc<Mutex<(u64, u64)>>,
+    result: Arc<Mutex<Option<Result<Vec<u8>, String>>>>,
+    until: Option<std::time::Instant>,
+}
+
+/// The project as it stood at [`Desk::edit_mark`]; holding it keeps that project alive, so
+/// [`Desk::edited_since`] compares the very same one.
+pub struct EditMark(Arc<effectcraft_engine::project::Project>);
+
 /// Files saved or rendered since the last [`Desk::take_saved`]: (file name, bytes).
 type Saved = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
@@ -162,6 +177,8 @@ pub struct Desk {
     focus_params: Vec<String>,
     /// [`Desk::focus`]: the time range (seconds) the Timeline is to show, once its width is known.
     focus_range: Option<(f64, f64)>,
+    /// The render [`Desk::start_render`] began.
+    clip: Option<ClipJob>,
 }
 
 impl Desk {
@@ -220,7 +237,7 @@ impl Desk {
         // when playback stops or the desk is dropped).
         app.hooks.audio_device = Some(Box::new(crate::audio_out::open));
         app.hooks.audio_devices = Some(Box::new(crate::audio_out::devices));
-        Desk { app, ctx: ctx.clone(), saved, dir, made, roots, look: None, focused: false, focus_effect: None, focus_params: vec![], focus_range: None }
+        Desk { app, ctx: ctx.clone(), saved, dir, made, roots, look: None, focused: false, focus_effect: None, focus_params: vec![], focus_range: None, clip: None }
     }
 
     /// The desk's own folder (files Fossa opens, saves without a path).
@@ -289,52 +306,119 @@ impl Desk {
 
     /// The active composition's work area as an H.264 MP4 (with its sound, if it has any), made
     /// by the Render Queue's exporter with the Movie defaults: (file name, bytes). `Ok(None)` for
-    /// a still (no layer of the comp has footage or a comp with time of its own): use
-    /// [`Desk::grab_png`]. The movie is encoded in memory (no file is left behind, none goes to
-    /// [`Desk::take_saved`]); a render that takes longer than [`CLIP_TIMEOUT`] is stopped.
+    /// a still: use [`Desk::grab_png`]. This waits for the render; [`Desk::start_render`] and
+    /// [`Desk::poll_render`] do the same without holding the host's frame.
     pub fn render_clip(&mut self) -> Result<Option<(String, Vec<u8>)>, String> {
+        if !self.start_render()? {
+            return Ok(None);
+        }
+        loop {
+            if let Some(r) = self.poll_render() {
+                return r.map(Some);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Start rendering the active comp's work area to an H.264 MP4 on a thread of its own (from
+    /// a snapshot of the project: editing goes on meanwhile). `Ok(false)` for a still (no layer
+    /// has footage or a comp with time of its own): use [`Desk::grab_png`]. The movie is encoded
+    /// in memory (no file is left behind, none goes to [`Desk::take_saved`]).
+    pub fn start_render(&mut self) -> Result<bool, String> {
         use effectcraft_engine::project::render_queue::{OutputFormat, OutputModule, RenderQueueItem};
+        if self.clip.is_some() {
+            return Err("a render is already running".into());
+        }
         let s = &self.app.session;
         let cid = s.resolve_comp(None).map_err(|e| e.to_string())?;
         let comp = s.project.comp(cid).ok_or("no composition is open")?;
+        let frame = comp.frame_rate.frame_duration();
         let timed = comp.layers.iter().any(|l| match &l.source {
             effectcraft_engine::project::LayerSource::Footage { item } | effectcraft_engine::project::LayerSource::Comp { item } => {
-                s.project.item(*item).and_then(|i| i.duration()).is_some_and(|d| d > comp.frame_rate.frame_duration())
+                s.project.item(*item).and_then(|i| i.duration()).is_some_and(|d| d > frame)
             }
             _ => false,
         });
-        if !timed || comp.duration <= comp.frame_rate.frame_duration() {
-            return Ok(None);
+        if !timed || comp.duration <= frame {
+            return Ok(false);
         }
         let name = s.project.item(cid).map(|i| i.name.clone()).unwrap_or_default();
         let name: String = name.chars().map(|c| if c.is_alphanumeric() || " -_.".contains(c) { c } else { '_' }).collect();
         let file = format!("{}.mp4", if name.trim().is_empty() { "Clip" } else { name.trim() });
         let mut item = RenderQueueItem::new(0, cid);
         item.output = OutputModule::for_format(OutputFormat::H264);
-        let out: Saved = Arc::default();
-        let sink = out.clone();
-        let exporter = effectcraft_host::FileExporter { sink: Some(Arc::new(move |path: &str, data: Vec<u8>| push(&sink, path, data))) };
-        let path = self.dir.join(&file).to_string_lossy().to_string();
-        let job = effectcraft_engine::ExportJob {
-            project: &s.project,
-            footage: s.footage.as_ref(),
-            expr: s.expr.as_deref(),
-            accel: s.accel.as_deref(),
-            item: &item,
-            path: &path,
-            storage: None,
-            label: format!("{name} (Fossa)"),
-            nested_switches: s.prefs.general.switches_affect_nested_comps,
-        };
-        let deadline = std::time::Instant::now() + CLIP_TIMEOUT;
-        let r = effectcraft_engine::Exporter::export(&exporter, &job, &mut |_, _| std::time::Instant::now() < deadline);
-        if std::time::Instant::now() >= deadline {
-            return Err(format!("the render took longer than {} s and was stopped", CLIP_TIMEOUT.as_secs()));
+        let job = ClipJob { file, until: Some(std::time::Instant::now() + CLIP_TIMEOUT), ..Default::default() };
+        let (project, footage, expr, accel) = (s.project.clone(), s.footage.clone(), s.expr.clone(), s.accel.clone());
+        let nested = s.prefs.general.switches_affect_nested_comps;
+        let path = self.dir.join(&job.file).to_string_lossy().to_string();
+        let (cancel, progress, result) = (job.cancel.clone(), job.progress.clone(), job.result.clone());
+        std::thread::Builder::new()
+            .name("ec-desk-render".into())
+            .spawn(move || {
+                let out: Saved = Arc::default();
+                let sink = out.clone();
+                let exporter = effectcraft_host::FileExporter { sink: Some(Arc::new(move |path: &str, data: Vec<u8>| push(&sink, path, data))) };
+                let job = effectcraft_engine::ExportJob {
+                    project: &project,
+                    footage: footage.as_ref(),
+                    expr: expr.as_deref(),
+                    accel: accel.as_deref(),
+                    item: &item,
+                    path: &path,
+                    storage: None,
+                    label: format!("{name} (Fossa)"),
+                    nested_switches: nested,
+                };
+                let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    effectcraft_engine::Exporter::export(&exporter, &job, &mut |done, total| {
+                        *progress.lock().unwrap_or_else(|e| e.into_inner()) = (done, total);
+                        !cancel.load(std::sync::atomic::Ordering::Relaxed)
+                    })
+                }));
+                let r = match run {
+                    Ok(Ok(_)) => out.lock().unwrap_or_else(|e| e.into_inner()).pop().map(|f| f.1).ok_or_else(|| "the render wrote no movie".to_string()),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => Err("the render failed".into()),
+                };
+                *result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            })
+            .map_err(|e| e.to_string())?;
+        self.clip = Some(job);
+        Ok(true)
+    }
+
+    /// The render [`Desk::start_render`] began: `None` while it runs (or none was started);
+    /// `Some` once, when it is done or failed. One running past [`CLIP_TIMEOUT`] is stopped.
+    pub fn poll_render(&mut self) -> Option<Result<(String, Vec<u8>), String>> {
+        let job = self.clip.as_ref()?;
+        let done = job.result.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(r) = done {
+            let file = self.clip.take()?.file;
+            return Some(r.map(|bytes| (file, bytes)));
         }
-        r?;
-        let mut files = std::mem::take(&mut *out.lock().unwrap_or_else(|e| e.into_inner()));
-        let (_, bytes) = files.pop().ok_or("the render wrote no movie")?;
-        Ok(Some((file, bytes)))
+        if job.until.is_none_or(|t| std::time::Instant::now() < t) {
+            return None;
+        }
+        job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.clip = None;
+        Some(Err(format!("the render took longer than {} s and was stopped", CLIP_TIMEOUT.as_secs())))
+    }
+
+    /// How far the running render is, 0 to 1 (`None` when none is running).
+    pub fn render_progress(&self) -> Option<f32> {
+        let (done, total) = *self.clip.as_ref()?.progress.lock().unwrap_or_else(|e| e.into_inner());
+        Some(if total == 0 { 0.0 } else { done as f32 / total as f32 })
+    }
+
+    /// The project as it stands now, to compare against later with [`Desk::edited_since`].
+    pub fn edit_mark(&self) -> EditMark {
+        EditMark(self.app.session.project.clone())
+    }
+
+    /// The project is not the one `mark` took: false again after undoing back to it (an edit
+    /// makes a new project and undo puts the old one back).
+    pub fn edited_since(&self, mark: &EditMark) -> bool {
+        !Arc::ptr_eq(&mark.0, &self.app.session.project)
     }
 
     /// The selected layers alone at the playhead (with their effects, masks and transforms, on
@@ -659,6 +743,9 @@ impl Desk {
 
 impl Drop for Desk {
     fn drop(&mut self) {
+        if let Some(job) = &self.clip {
+            job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         eframe::App::on_exit(&mut self.app);
         if self.made {
             let _ = std::fs::remove_dir_all(&self.dir);

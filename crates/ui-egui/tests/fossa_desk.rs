@@ -305,4 +305,29 @@ fn effects_desk_in_a_host_window() {
     if let Ok(out) = std::env::var("FOSSA_CLIP_OUT") {
         std::fs::write(out, &mp4).unwrap();
     }
+
+    // The same render off the host's thread: the desk keeps drawing and taking edits while it
+    // runs, the result comes once, and a still starts none.
+    let mark = desk.edit_mark();
+    assert!(!desk.edited_since(&mark));
+    assert!(desk.start_render().expect("start"));
+    assert!(desk.start_render().is_err(), "one render at a time");
+    assert!(desk.render_progress().is_some());
+    let comp = desk.app().session.resolve_comp(None).unwrap().0;
+    desk.app().session.execute("comp.settings", json!({"comp": comp, "name": "Renamed"})).expect("an edit while rendering");
+    assert!(desk.edited_since(&mark));
+    let t0 = std::time::Instant::now();
+    let got = loop {
+        h.run_steps(1);
+        if let Some(r) = h.state_mut().desk.poll_render() {
+            break r;
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(120), "the render ends");
+    };
+    let (_, bg) = got.expect("the background render");
+    assert!(bg.len() > 1000 && &bg[4..8] == b"ftyp");
+    let desk = &mut h.state_mut().desk;
+    assert!(desk.poll_render().is_none() && desk.render_progress().is_none(), "the result comes once");
+    desk.app().session.execute("edit.undo", json!({})).unwrap();
+    assert!(!desk.edited_since(&mark), "undo back to the mark is no edit");
 }
