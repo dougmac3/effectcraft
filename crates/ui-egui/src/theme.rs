@@ -356,24 +356,39 @@ pub fn install(ctx: &egui::Context, t: &Tokens, language: &str) {
 /// instead of replacing them. The host's Proportional and Monospace stacks keep their faces
 /// first; the named families the panels use ("semibold", "medium") are added, and JetBrains Mono
 /// and the system script fallbacks go at the end of every stack, for the symbols and scripts the
-/// host's faces lack. Faces already added are skipped, so this runs again harmlessly.
+/// host's faces lack. Faces already added are skipped, so this runs again harmlessly. The script
+/// fallbacks need the system font scan (a second or more, longer on a cold disk), so off the web
+/// they are found on a thread of their own and join the fonts when found: the host's window
+/// never waits for them.
 pub fn install_hosted(ctx: &egui::Context, t: &Tokens, language: &str) {
     use egui::{FontInsert, FontPriority, InsertFontFamily};
-    let last = |families: &[FontFamily]| families.iter().map(|f| InsertFontFamily { family: f.clone(), priority: FontPriority::Lowest }).collect();
+    let last = |families: &[FontFamily]| -> Vec<InsertFontFamily> {
+        families.iter().map(|f| InsertFontFamily { family: f.clone(), priority: FontPriority::Lowest }).collect()
+    };
     let (semibold, medium) = (FontFamily::Name("semibold".into()), FontFamily::Name("medium".into()));
     let every = [FontFamily::Proportional, FontFamily::Monospace, semibold.clone(), medium.clone()];
     ctx.add_font(FontInsert::new("inter-semibold", FontData::from_static(INTER_SEMIBOLD), last(&[semibold.clone()])));
     ctx.add_font(FontInsert::new("inter-medium", FontData::from_static(INTER_MEDIUM), last(&[medium.clone()])));
     ctx.add_font(FontInsert::new("inter", FontData::from_static(INTER_REGULAR), last(&[semibold, medium])));
     ctx.add_font(FontInsert::new("jbmono", FontData::from_static(JETBRAINS_MONO), last(&every)));
-    let mut scripts = FontDefinitions::empty();
-    scripts.families.insert(FontFamily::Proportional, Vec::new());
-    for name in install_script_fallbacks(&mut scripts, language) {
-        if let Some(data) = scripts.font_data.remove(&name) {
-            ctx.add_font(FontInsert::new(&name, (*data).clone(), last(&every)));
-        }
-    }
     apply_visuals(ctx, t);
+    let (ctx, language) = (ctx.clone(), language.to_string());
+    let scripts = move || {
+        let mut scripts = FontDefinitions::empty();
+        scripts.families.insert(FontFamily::Proportional, Vec::new());
+        for name in install_script_fallbacks(&mut scripts, &language) {
+            if let Some(data) = scripts.font_data.remove(&name) {
+                ctx.add_font(FontInsert::new(&name, (*data).clone(), last(&every)));
+            }
+        }
+        ctx.request_repaint();
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Err(e) = std::thread::Builder::new().name("ec-desk-fonts".into()).spawn(scripts) {
+        log::error!("script fonts: {e}");
+    }
+    #[cfg(target_arch = "wasm32")]
+    scripts();
 }
 
 /// Scripts the bundled fonts lack beyond CJK, each probed with one of its letters: names typed in
