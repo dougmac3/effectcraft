@@ -177,6 +177,20 @@ fn effects_desk_in_a_host_window() {
     assert!(desk.control("no.such.method", json!({})).is_err());
     assert_eq!(effects(desk, layer), ["ec.blur.gaussian"]);
 
+    // The agent's files stay in the desk's folder (and the host's roots): a Save As outside is
+    // refused and writes nothing, one inside the desk's folder is written and goes to Fossa.
+    let away = std::env::temp_dir().join(format!("fossa-desk-outside-{}", std::process::id()));
+    std::fs::create_dir_all(&away).unwrap();
+    let out = away.join("Agent.ecproj");
+    let e = desk.control("engine.execute", json!({"command": "file.saveAs", "params": {"path": out.to_string_lossy()}})).unwrap_err();
+    assert!(e.contains("outside"), "{e}");
+    assert!(!out.exists());
+    let _ = std::fs::remove_dir_all(&away);
+    let inside = desk.folder().join("Agent.ecproj");
+    desk.control("engine.execute", json!({"command": "file.saveAs", "params": {"path": inside.to_string_lossy()}})).expect("Save As in the desk's folder");
+    assert!(inside.is_file());
+    assert!(desk.take_saved().iter().any(|(name, _)| name == "Agent.ecproj"));
+
     // The listing: commands with their parameters typed, every effect's parameters typed.
     let list = desk.commands();
     let (typed, untyped) = (list["typed"].as_u64().unwrap(), list["untyped"].as_u64().unwrap());

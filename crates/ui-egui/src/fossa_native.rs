@@ -8,6 +8,9 @@
 //! the methods of [`crate::control`]; [`Desk::commands`] lists the commands and every effect's
 //! parameters, typed), and can draw one panel alone ([`Desk::panel_ui`]), narrowed to what the
 //! chat is about ([`Desk::focus`]: one effect of one layer, a time range of the timeline).
+//! The files its requests may read and write are confined to the desk's own folder and those
+//! the host names ([`Desk::set_file_roots`]), as `effectcraft-cli mcp --automation-read-root`
+//! confines them; what the person does by hand is not.
 //!
 //! While hosted ([`crate::FOSSA_HOSTED`]) the editor sends no window commands (title, close,
 //! size, full screen), opens no windows of its own (torn-off panels and the video preview are
@@ -20,6 +23,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use effectcraft_automation::confine::{Access, Confinement, Lookup};
 use effectcraft_engine::Services;
 use effectcraft_engine::effects::EffectSpec;
 use effectcraft_engine::project::{GroupKind, ParamUi};
@@ -137,8 +141,13 @@ pub struct Desk {
     app: EffectcraftApp,
     ctx: egui::Context,
     saved: Saved,
-    /// Where files Fossa opens are written, and where saves without a path go.
+    /// Where files Fossa opens are written, and where saves without a path go: made fresh for
+    /// the desk, private on Unix.
     dir: PathBuf,
+    /// [`Self::dir`] was made by the desk (it is removed with it, and the agent may use it).
+    made: bool,
+    /// The files [`Desk::control`]'s requests may read and write.
+    roots: Confinement,
     /// The desk's look between frames (the host's is put back after each).
     look: Option<Look>,
     /// The last click landed in the desk: keyboard shortcuts go to it.
@@ -155,8 +164,15 @@ impl Desk {
     pub fn new(ctx: &egui::Context, render_state: Option<&eframe::egui_wgpu::RenderState>) -> Self {
         crate::FOSSA_HOSTED.store(true, std::sync::atomic::Ordering::Relaxed);
         let saved: Saved = Arc::default();
-        let dir = std::env::temp_dir().join(format!("fossa-effectcraft-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
+        // A new folder no one else could have made first: a name not guessed in advance, made
+        // fresh (an existing one fails), private on Unix. Without it the agent gets no files.
+        let tag = std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), std::time::SystemTime::now());
+        let dir = std::env::temp_dir().join(format!("fossa-effectcraft-{}-{tag:016x}", std::process::id()));
+        let made = std::fs::create_dir(&dir).is_ok();
+        #[cfg(unix)]
+        let made = made && std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).is_ok();
+        let own: &[PathBuf] = if made { std::slice::from_ref(&dir) } else { &[] };
+        let roots = Confinement::new(own, own).unwrap_or_else(|_| no_files());
         let mut session = effectcraft_host::session();
         session.check_footage_on_open = true;
         session.autosave.background = true;
@@ -198,7 +214,21 @@ impl Desk {
         // when playback stops or the desk is dropped).
         app.hooks.audio_device = Some(Box::new(crate::audio_out::open));
         app.hooks.audio_devices = Some(Box::new(crate::audio_out::devices));
-        Desk { app, ctx: ctx.clone(), saved, dir, look: None, focused: false, focus_effect: None, focus_range: None }
+        Desk { app, ctx: ctx.clone(), saved, dir, made, roots, look: None, focused: false, focus_effect: None, focus_range: None }
+    }
+
+    /// The desk's own folder (files Fossa opens, saves without a path).
+    pub fn folder(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The folders the agent's requests may read and write (the project's, say), besides the
+    /// desk's own. Each must exist.
+    pub fn set_file_roots(&mut self, read: &[&Path], write: &[&Path]) -> Result<(), String> {
+        let own = if self.made { vec![self.dir.clone()] } else { vec![] };
+        let with_own = |extra: &[&Path]| own.iter().cloned().chain(extra.iter().map(|p| p.to_path_buf())).collect::<Vec<_>>();
+        self.roots = Confinement::new(&with_own(read), &with_own(write)).map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     /// The editor (for hosts and tests that drive it further).
@@ -315,8 +345,10 @@ impl Desk {
     /// `engine.execute`, `engine.commands`, `ui.set`, `ui.panel.show`, `ui.inspect`,
     /// `render.frame`...), between frames. Synthetic input (`ui.click`, `ui.key`...) and window
     /// screenshots need the windowed app's channel: here they are errors (use [`Desk::panel_ui`],
-    /// [`Desk::grab_png`]).
-    pub fn control(&mut self, method: &str, params: Value) -> Result<Value, String> {
+    /// [`Desk::grab_png`]). Files are read and written only inside the desk's roots
+    /// ([`Desk::set_file_roots`]).
+    pub fn control(&mut self, method: &str, mut params: Value) -> Result<Value, String> {
+        self.confine(method, &mut params)?;
         let (req, _reply) = ControlRequest::new(method, params);
         let reply = match crate::control::handle(&mut self.app, &self.ctx, &req) {
             Outcome::Done(v) => v,
@@ -329,6 +361,42 @@ impl Desk {
             Outcome::Screenshot { .. } => return Err("the desk takes no window screenshots: use grab_png, or panel_ui to draw a panel".into()),
         };
         if reply["ok"].as_bool() == Some(true) { Ok(reply["result"].clone()) } else { Err(reply["error"].as_str().unwrap_or("failed").to_string()) }
+    }
+
+    /// Check a [`Desk::control`] request against the desk's roots before it runs (the checks of
+    /// `effectcraft_automation::Backend::exec`). Methods not known to touch no files are refused.
+    fn confine(&mut self, method: &str, params: &mut Value) -> Result<(), String> {
+        let c = &self.roots;
+        match method {
+            "engine.execute" | "ui.menu.invoke" => {
+                let id = params.get("command").or(params.get("id")).and_then(Value::as_str).unwrap_or_default().to_string();
+                let inner = params.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}));
+                let lookup = c.check_command(&id, &inner).map_err(|e| e.to_string())?;
+                let Some(lookup) = lookup else { return Ok(()) };
+                let s = &mut self.app.session;
+                let found = match lookup {
+                    Lookup::ProjectFile => s.execute("project.summary", json!({})),
+                    Lookup::RenderOutputs => s.execute("renderQueue.list", json!({})),
+                };
+                c.check_lookup(&lookup, &found.map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+            }
+            // Without a path the frame would go to a temp file outside the roots: inline instead.
+            "render.frame" => match params.get("path").and_then(Value::as_str) {
+                Some(p) => c.check(p, Access::Write).map(drop).map_err(|e| e.to_string()),
+                None => {
+                    match params.as_object_mut() {
+                        Some(o) => drop(o.insert("base64".into(), json!(true))),
+                        None => *params = json!({"base64": true}),
+                    }
+                    Ok(())
+                }
+            },
+            // No files (synthetic input and screenshots are refused when they come back).
+            "engine.commands" | "ui.menu.list" | "ui.inspect" | "ui.elements" | "ui.set" | "ui.panel.show" | "ui.panel.close" | "ui.viewer.locate"
+            | "ui.viewer.hit" | "ui.timeline.locate" | "ui.playback" | "ui.resize" | "ui.focus" | "app.quit" | "ui.click" | "ui.move" | "ui.drag"
+            | "ui.scroll" | "ui.key" | "ui.type" | "ui.screenshot" => Ok(()),
+            m => Err(format!("unknown method `{m}`")),
+        }
     }
 
     /// The `engine.commands` listing for agents: every command with its parameters, typed where
@@ -519,8 +587,15 @@ impl Desk {
 impl Drop for Desk {
     fn drop(&mut self) {
         eframe::App::on_exit(&mut self.app);
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if self.made {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
     }
+}
+
+/// Roots that let the agent read and write nothing.
+fn no_files() -> Confinement {
+    Confinement::new(&[], &[]).expect("no roots")
 }
 
 /// How many shapes each layer above the background holds so far this frame (what the host
