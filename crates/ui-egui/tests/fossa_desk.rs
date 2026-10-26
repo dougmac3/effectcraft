@@ -233,13 +233,18 @@ fn effects_desk_in_a_host_window() {
     desk.control("engine.execute", json!({"command": "layer.select", "params": {"layers": []}})).unwrap();
     assert!(desk.grab_selection_png().is_err());
 
-    // One panel alone: Effect Controls narrowed to the blur on that layer, in a 900 x 320 card.
-    desk.focus(json!({"layer": layer, "effect": blur})).expect("focus");
+    // One panel alone: Effect Controls narrowed to the blur on that layer and to its Blurriness,
+    // in a 900 x 320 card. Unknown parameter ids are named.
+    let e = desk.focus(json!({"layer": layer, "effect": blur, "params": ["blurriness", "noSuch"]})).unwrap_err();
+    assert!(e.contains("noSuch") && !e.contains("blurriness"), "{e}");
+    desk.focus(json!({"layer": layer, "effect": blur, "params": ["blurriness"]})).expect("focus");
     h.state_mut().panel = Some("EffectControls");
     h.run_steps(4);
     settle(&mut h);
     save(&mut h, "FOSSA_PANEL_SHOT", Some(card()));
     assert!(outside(&h.ctx, card()).is_empty(), "{:?}", outside(&h.ctx, card()));
+    let rows: Vec<String> = h.state_mut().desk.app().auto.query("effectControls.row.").iter().map(|e| e.label.clone()).collect();
+    assert_eq!(rows, ["Blurriness"]);
 
     // Its context menu opens inside the card (moved up: the card is short), takes a click and
     // closes.
@@ -276,4 +281,28 @@ fn effects_desk_in_a_host_window() {
     h.get_by_label("Cancel").click();
     h.run_steps(4);
     assert!(h.state_mut().desk.app().dialog.is_none());
+
+    // A still has no clip to render (Fossa grabs its frame); a comp made from a clip renders its
+    // work area to an MP4.
+    let desk = &mut h.state_mut().desk;
+    assert_eq!(desk.render_clip().expect("still"), None);
+    let gen_path = desk.folder().join("gen.mp4").to_string_lossy().to_string();
+    let s = &mut desk.app().session;
+    s.execute("comp.new", json!({"name": "Gen", "width": 320, "height": 180, "duration": 2})).unwrap();
+    let solid = s.execute("layer.newSolid", json!({"name": "Box", "color": "#ff8000", "width": 80, "height": 80})).unwrap()["layer"].as_u64().unwrap();
+    s.execute("prop.addKey", json!({"layer": solid, "path": "transform/position", "time": 0.0, "value": [40, 90, 0]})).unwrap();
+    s.execute("prop.addKey", json!({"layer": solid, "path": "transform/position", "time": 1.9, "value": [280, 90, 0]})).unwrap();
+    s.execute("renderQueue.add", json!({"format": "h264", "output": gen_path})).unwrap();
+    s.execute("renderQueue.render", json!({"wait": true})).unwrap();
+    let (_, clip) = desk.take_saved().into_iter().find(|(n, _)| n.ends_with(".mp4")).expect("the generated clip");
+    desk.open("clip.mp4", clip);
+    let dur = desk.app().session.active_comp().expect("the clip's comp").duration;
+    assert!((dur.seconds() - 2.0).abs() < 0.1, "{dur:?}");
+    let (name, mp4) = desk.render_clip().expect("render").expect("a clip");
+    assert!(name.ends_with(".mp4"), "{name}");
+    assert!(mp4.len() > 1000 && &mp4[4..8] == b"ftyp", "{} bytes", mp4.len());
+    assert!(desk.take_saved().is_empty(), "the clip is not also a save");
+    if let Ok(out) = std::env::var("FOSSA_CLIP_OUT") {
+        std::fs::write(out, &mp4).unwrap();
+    }
 }

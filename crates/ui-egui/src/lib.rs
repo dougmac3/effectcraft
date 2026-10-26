@@ -330,6 +330,9 @@ pub struct EffectcraftApp {
     pub(crate) picks: Vec<(Receiver<Vec<String>>, Then)>,
     /// Effect Controls shows only this effect (group uid): Fossa Direct's card for one effect.
     pub(crate) effect_only: Option<u64>,
+    /// With [`Self::effect_only`]: only these of its parameters (spec ids, in this order); empty
+    /// shows them all.
+    pub(crate) effect_params: Vec<String>,
     /// Layers whose pictures Fossa Direct is asked to add to the shot (layer context menus).
     pub shot_requests: Vec<u64>,
     pub(crate) input_waiters: Vec<Sender<serde_json::Value>>,
@@ -445,6 +448,7 @@ impl EffectcraftApp {
             synthetic: vec![],
             picks: vec![],
             effect_only: None,
+            effect_params: vec![],
             shot_requests: vec![],
             input_waiters: vec![],
             job_waiters: vec![],

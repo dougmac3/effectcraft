@@ -33,6 +33,10 @@ use crate::EffectcraftApp;
 use crate::control::{ControlRequest, Outcome};
 use crate::dock::PanelKind;
 
+/// How long [`Desk::render_clip`] may take before it is stopped.
+// ponytail: one fixed limit; scale it with the clip's length if long clips hit it.
+pub const CLIP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
 /// Files saved or rendered since the last [`Desk::take_saved`]: (file name, bytes).
 type Saved = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
@@ -154,6 +158,8 @@ pub struct Desk {
     focused: bool,
     /// [`Desk::focus`]: the one effect Effect Controls shows in [`Desk::panel_ui`] (group uid).
     focus_effect: Option<u64>,
+    /// [`Desk::focus`]: the parameters of that effect it shows (spec ids, in order; empty: all).
+    focus_params: Vec<String>,
     /// [`Desk::focus`]: the time range (seconds) the Timeline is to show, once its width is known.
     focus_range: Option<(f64, f64)>,
 }
@@ -214,7 +220,7 @@ impl Desk {
         // when playback stops or the desk is dropped).
         app.hooks.audio_device = Some(Box::new(crate::audio_out::open));
         app.hooks.audio_devices = Some(Box::new(crate::audio_out::devices));
-        Desk { app, ctx: ctx.clone(), saved, dir, made, roots, look: None, focused: false, focus_effect: None, focus_range: None }
+        Desk { app, ctx: ctx.clone(), saved, dir, made, roots, look: None, focused: false, focus_effect: None, focus_params: vec![], focus_range: None }
     }
 
     /// The desk's own folder (files Fossa opens, saves without a path).
@@ -279,6 +285,56 @@ impl Desk {
         let comp = s.resolve_comp(None).map_err(|e| e.to_string())?;
         let (w, h, rgba) = s.render_rgba8_alpha(comp, s.time(), 0, false).map_err(|e| e.to_string())?;
         crate::control::encode_png(&rgba, w, h)
+    }
+
+    /// The active composition's work area as an H.264 MP4 (with its sound, if it has any), made
+    /// by the Render Queue's exporter with the Movie defaults: (file name, bytes). `Ok(None)` for
+    /// a still (no layer of the comp has footage or a comp with time of its own): use
+    /// [`Desk::grab_png`]. The movie is encoded in memory (no file is left behind, none goes to
+    /// [`Desk::take_saved`]); a render that takes longer than [`CLIP_TIMEOUT`] is stopped.
+    pub fn render_clip(&mut self) -> Result<Option<(String, Vec<u8>)>, String> {
+        use effectcraft_engine::project::render_queue::{OutputFormat, OutputModule, RenderQueueItem};
+        let s = &self.app.session;
+        let cid = s.resolve_comp(None).map_err(|e| e.to_string())?;
+        let comp = s.project.comp(cid).ok_or("no composition is open")?;
+        let timed = comp.layers.iter().any(|l| match &l.source {
+            effectcraft_engine::project::LayerSource::Footage { item } | effectcraft_engine::project::LayerSource::Comp { item } => {
+                s.project.item(*item).and_then(|i| i.duration()).is_some_and(|d| d > comp.frame_rate.frame_duration())
+            }
+            _ => false,
+        });
+        if !timed || comp.duration <= comp.frame_rate.frame_duration() {
+            return Ok(None);
+        }
+        let name = s.project.item(cid).map(|i| i.name.clone()).unwrap_or_default();
+        let name: String = name.chars().map(|c| if c.is_alphanumeric() || " -_.".contains(c) { c } else { '_' }).collect();
+        let file = format!("{}.mp4", if name.trim().is_empty() { "Clip" } else { name.trim() });
+        let mut item = RenderQueueItem::new(0, cid);
+        item.output = OutputModule::for_format(OutputFormat::H264);
+        let out: Saved = Arc::default();
+        let sink = out.clone();
+        let exporter = effectcraft_host::FileExporter { sink: Some(Arc::new(move |path: &str, data: Vec<u8>| push(&sink, path, data))) };
+        let path = self.dir.join(&file).to_string_lossy().to_string();
+        let job = effectcraft_engine::ExportJob {
+            project: &s.project,
+            footage: s.footage.as_ref(),
+            expr: s.expr.as_deref(),
+            accel: s.accel.as_deref(),
+            item: &item,
+            path: &path,
+            storage: None,
+            label: format!("{name} (Fossa)"),
+            nested_switches: s.prefs.general.switches_affect_nested_comps,
+        };
+        let deadline = std::time::Instant::now() + CLIP_TIMEOUT;
+        let r = effectcraft_engine::Exporter::export(&exporter, &job, &mut |_, _| std::time::Instant::now() < deadline);
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("the render took longer than {} s and was stopped", CLIP_TIMEOUT.as_secs()));
+        }
+        r?;
+        let mut files = std::mem::take(&mut *out.lock().unwrap_or_else(|e| e.into_inner()));
+        let (_, bytes) = files.pop().ok_or("the render wrote no movie")?;
+        Ok(Some((file, bytes)))
     }
 
     /// The selected layers alone at the playhead (with their effects, masks and transforms, on
@@ -447,12 +503,15 @@ impl Desk {
     /// effect, time, range: [start, end]}`. `comp` opens that composition; `layer(s)` selects
     /// them (id, name or `#n`); `effect` (a uid, 1-based index, or effect name or id on the
     /// first of them) makes Effect Controls show only that effect and selects it (null shows
-    /// them all again); `time` (seconds) moves the playhead; `range` scrolls and zooms the
-    /// Timeline to those seconds. `{}` clears the narrowing.
+    /// them all again), and with `params: [id]` (the effect's parameter ids, `tweaking/size`)
+    /// only those rows, in that order (absent or empty: all); `time` (seconds) moves the
+    /// playhead; `range` scrolls and zooms the Timeline to those seconds. `{}` clears the
+    /// narrowing.
     pub fn focus(&mut self, target: Value) -> Result<(), String> {
         let s = &mut self.app.session;
         if target.as_object().is_some_and(|o| o.is_empty()) {
             self.focus_effect = None;
+            self.focus_params.clear();
             self.focus_range = None;
             return Ok(());
         }
@@ -472,6 +531,7 @@ impl Desk {
         }
         if let Some(e) = target.get("effect") {
             self.focus_effect = None;
+            self.focus_params.clear();
             if !e.is_null() {
                 let layer = s.state.selected_layers.first().copied().ok_or("select a layer for the effect (`layer`)")?;
                 let comp = s.active_comp().ok_or("no composition is open")?;
@@ -489,9 +549,20 @@ impl Desk {
                     Value::String(name) => fx.iter().find(|f| f.1.eq_ignore_ascii_case(name) || f.2 == *name),
                     _ => None,
                 };
-                let uid = found.map(|f| f.0).ok_or_else(|| format!("no effect {e} on layer {}", l.name))?;
+                let (uid, spec) = found.map(|f| (f.0, f.2.clone())).ok_or_else(|| format!("no effect {e} on layer {}", l.name))?;
+                let params: Vec<String> = match target.get("params") {
+                    None | Some(Value::Null) => vec![],
+                    Some(Value::Array(a)) => a.iter().map(|v| v.as_str().map(str::to_string).ok_or_else(|| format!("`params` takes ids, not {v}"))).collect::<Result<_, _>>()?,
+                    Some(v) => return Err(format!("`params` takes a list of parameter ids, not {v}")),
+                };
+                let known: Vec<&str> = effectcraft_engine::effects::find(&spec).map(|f| f.params.iter().map(|p| p.id).collect()).unwrap_or_default();
+                let unknown: Vec<&str> = params.iter().map(String::as_str).filter(|p| !known.contains(p)).collect();
+                if !unknown.is_empty() {
+                    return Err(format!("{spec} has no parameter {}", unknown.join(", ")));
+                }
                 s.execute("prop.select", json!({"layer": layer.0, "prop": uid})).map_err(|e| e.to_string())?;
                 self.focus_effect = Some(uid);
+                self.focus_params = params;
             }
         }
         if let Some(Value::Array(r)) = target.get("range")
@@ -568,8 +639,10 @@ impl Desk {
             match panel {
                 Some(p) => {
                     self.app.effect_only = self.focus_effect;
+                    self.app.effect_params = self.focus_params.clone();
                     self.app.panel_ui(ui, frame, p);
                     self.app.effect_only = None;
+                    self.app.effect_params.clear();
                 }
                 None => eframe::App::ui(&mut self.app, ui, frame),
             }

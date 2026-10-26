@@ -686,6 +686,48 @@ fn toggle_closed(app: &mut EffectcraftApp, g: &PropGroup, open: bool, all: bool)
     }
 }
 
+/// One parameter's row (and its open slider or dial) at `*y`, under group `g`.
+#[allow(clippy::too_many_arguments)]
+fn prop_rows(
+    app: &mut EffectcraftApp,
+    ui: &mut egui::Ui,
+    p: &egui::Painter,
+    layer: &Layer,
+    g: &PropGroup,
+    pr: &Property,
+    ectx: &EvalCtx,
+    rect: Rect,
+    y: &mut f32,
+    depth: usize,
+    actions: &mut Actions,
+) {
+    let r = Rect::from_min_size(pos2(rect.min.x, *y), vec2(rect.width(), ROW));
+    *y += ROW;
+    let indent = PARAM_NAME_X - 13.0 + TREE_INDENT * depth as f32;
+    let visible = !(r.max.y < rect.min.y || r.min.y > rect.max.y);
+    if visible {
+        app.auto.add(&format!("effectControls.row.{}", pr.uid), r, &pr.name);
+        let dims = prop_row(app, ui, p, layer, g, pr, ectx, r, indent, actions);
+        // A Timeline pick whip can be dropped here (After Effects).
+        super::timeline::whip_target(ui.ctx(), r.intersect(rect), layer.id.0, pr.uid, dims);
+    }
+    if app.ui.fx_slider_open.contains(&pr.uid) {
+        if matches!(pr.ui, ParamUi::Angle) {
+            let sr = Rect::from_min_size(pos2(rect.min.x, *y), vec2(rect.width(), DIAL_ROW));
+            *y += DIAL_ROW;
+            if sr.max.y >= rect.min.y && sr.min.y <= rect.max.y {
+                dial_row(app, ui, layer, pr, ectx, sr, indent + 22.0, actions);
+            }
+        } else if matches!(pr.ui, ParamUi::Slider { .. }) {
+            let sr = Rect::from_min_size(pos2(rect.min.x, *y), vec2(rect.width(), 34.0));
+            *y += 34.0;
+            if sr.max.y >= rect.min.y && sr.min.y <= rect.max.y {
+                slider_row(app, ui, p, layer, pr, ectx, sr, indent + 22.0, actions);
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn group_rows(
     app: &mut EffectcraftApp,
@@ -708,30 +750,7 @@ fn group_rows(
                 if matches!(pr.ui, ParamUi::Hidden) || pr.three_d_only && !layer.is_3d() || !fx.shown(layer, ectx, &pr.match_id) {
                     continue;
                 }
-                *y += ROW;
-                let indent = PARAM_NAME_X - 13.0 + TREE_INDENT * depth as f32;
-                let visible = !(r.max.y < rect.min.y || r.min.y > rect.max.y);
-                if visible {
-                    app.auto.add(&format!("effectControls.row.{}", pr.uid), r, &pr.name);
-                    let dims = prop_row(app, ui, p, layer, g, pr, ectx, r, indent, actions);
-                    // A Timeline pick whip can be dropped here (After Effects).
-                    super::timeline::whip_target(ui.ctx(), r.intersect(rect), layer.id.0, pr.uid, dims);
-                }
-                if app.ui.fx_slider_open.contains(&pr.uid) {
-                    if matches!(pr.ui, ParamUi::Angle) {
-                        let sr = Rect::from_min_size(pos2(rect.min.x, *y), vec2(rect.width(), DIAL_ROW));
-                        *y += DIAL_ROW;
-                        if sr.max.y >= rect.min.y && sr.min.y <= rect.max.y {
-                            dial_row(app, ui, layer, pr, ectx, sr, indent + 22.0, actions);
-                        }
-                    } else if matches!(pr.ui, ParamUi::Slider { .. }) {
-                        let sr = Rect::from_min_size(pos2(rect.min.x, *y), vec2(rect.width(), 34.0));
-                        *y += 34.0;
-                        if sr.max.y >= rect.min.y && sr.min.y <= rect.max.y {
-                            slider_row(app, ui, p, layer, pr, ectx, sr, indent + 22.0, actions);
-                        }
-                    }
-                }
+                prop_rows(app, ui, p, layer, g, pr, ectx, rect, y, depth, actions);
             }
             Node::Group(sg) => {
                 // Paint strokes live in the Timeline only (AE's Paint shows Paint on Transparent).
@@ -1343,7 +1362,18 @@ pub fn show(app: &mut EffectcraftApp, ui: &mut egui::Ui, rect: Rect) {
             app.auto.add(&format!("effectControls.effect.{}.warning", g.uid), wr, &w);
             y += wr.height() + 6.0;
         }
-        if open {
+        // Narrowed to some of its parameters (Fossa Direct's card): those rows, in that order.
+        if open && app.effect_only.is_some() && !app.effect_params.is_empty() {
+            for id in app.effect_params.clone() {
+                let (parent, last) = match id.rsplit_once('/') {
+                    Some((path, last)) => (path.split('/').try_fold(g, |g, part| g.sub(part)), last),
+                    None => (Some(g), id.as_str()),
+                };
+                if let Some((parent, pr)) = parent.and_then(|pg| pg.get(last).map(|pr| (pg, pr))) {
+                    prop_rows(app, ui, &bp, &layer, parent, pr, &ectx, body, &mut y, 0, &mut actions);
+                }
+            }
+        } else if open {
             let eh = editor_height(effect, g, body.width());
             if eh > 0.0 {
                 let er = Rect::from_min_size(pos2(body.min.x, y), vec2(body.width(), eh));
